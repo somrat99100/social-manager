@@ -1,0 +1,4 @@
+node_modules
+.DS_Store
+# NOTE: docs/ (the built site) is intentionally NOT ignored — GitHub Pages
+# serves it directly from this branch, so it needs to be committed.

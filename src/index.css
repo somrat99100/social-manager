@@ -1,0 +1,60 @@
+@import "tailwindcss";
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --ink: #0B0E13;
+  --panel: #141822;
+  --panel-raised: #1B2029;
+  --hairline: #262C38;
+  --text-primary: #EDEFF3;
+  --text-muted: #8B93A1;
+  --text-dim: #5A6272;
+  --amber: #F5A623;
+  --amber-dim: #7A551A;
+  --fb: #4C8DFF;
+  --fb-dim: #23375E;
+  --ig-a: #F7567C;
+  --ig-b: #FBAA47;
+  --yt: #E5484D;
+  --positive: #34D399;
+  --negative: #F87171;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  background: var(--ink);
+  color: var(--text-primary);
+  font-family: 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.font-display { font-family: 'Space Grotesk', 'Inter', sans-serif; }
+.font-mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--hairline); border-radius: 4px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@keyframes led-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+  50% { opacity: 0.85; box-shadow: 0 0 0 4px rgba(52, 211, 153, 0); }
+}
+.led-live { animation: led-pulse 2.2s ease-in-out infinite; }
+
+.focus-ring:focus-visible {
+  outline: 2px solid var(--amber);
+  outline-offset: 2px;
+}
