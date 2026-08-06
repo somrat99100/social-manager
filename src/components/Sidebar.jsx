@@ -1,54 +1,74 @@
-import { Radio, LayoutGrid, Send, UserCog } from 'lucide-react';
-import { useApp } from '../context/AppContext';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/auth-context';
+import TallyDot from './tally-dot';
 
 const navItems = [
-  { key: 'dashboard', label: 'Console', icon: LayoutGrid },
-  { key: 'posts', label: 'Broadcasts', icon: Send },
-  { key: 'settings', label: 'Profile setup', icon: UserCog },
+  { to: '/', label: 'Home', icon: '⌂' },
+  { to: '/create', label: 'Create post', icon: '✎' },
+  { to: '/log', label: 'Broadcast log', icon: '▤' },
+  { to: '/settings', label: 'Connect profile', icon: '⚙' },
 ];
 
-export default function Sidebar() {
-  const { view, navigate, usingLiveData } = useApp();
+export default function Sidebar({ mobileOpen, onClose }) {
+  const { profile, logout } = useAuth();
+  const navigate = useNavigate();
+  const fb = profile?.fb;
 
   return (
-    <aside
-      className="hidden md:flex flex-col w-60 shrink-0 border-r"
-      style={{ borderColor: 'var(--hairline)', background: 'var(--panel)' }}
-    >
-      <div className="px-5 py-6 flex items-center gap-2">
-        <Radio size={20} color="var(--amber)" />
-        <span className="font-display font-semibold text-lg tracking-tight">SocialFlow</span>
-      </div>
-
-      <nav className="flex-1 px-3 space-y-1">
-        {navItems.map(({ key, label, icon: Icon }) => {
-          const active = view.name === key;
-          return (
-            <button
-              key={key}
-              onClick={() => navigate(key)}
-              className="focus-ring w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors"
-              style={{
-                background: active ? 'var(--panel-raised)' : 'transparent',
-                color: active ? 'var(--text-primary)' : 'var(--text-muted)',
-              }}
-            >
-              <Icon size={17} />
-              {label}
-            </button>
-          );
-        })}
-      </nav>
-
-      <div className="px-4 py-4 border-t" style={{ borderColor: 'var(--hairline)' }}>
-        <div className="flex items-center gap-2 text-xs" style={{ color: 'var(--text-dim)' }}>
-          <span
-            className={`inline-block w-2 h-2 rounded-full ${usingLiveData ? 'led-live' : ''}`}
-            style={{ background: usingLiveData ? 'var(--positive)' : 'var(--text-dim)' }}
-          />
-          {usingLiveData ? 'Live Facebook data' : 'Demo data — add a token in Profile setup'}
+    <>
+      {mobileOpen && <div className="sidebar-scrim" onClick={onClose} />}
+      <aside className={`sidebar ${mobileOpen ? 'sidebar-open' : ''}`}>
+        <div className="sidebar-brand">
+          <span className="sidebar-brand-mark">S</span>
+          <span className="sidebar-brand-name">Social Manager</span>
         </div>
-      </div>
-    </aside>
+
+        <div className="sidebar-channel">
+          <TallyDot status={fb ? 'live' : 'idle'} />
+          {fb ? (
+            <div className="sidebar-channel-info">
+              <img src={fb.avatar} alt="" className="sidebar-channel-avatar" />
+              <div>
+                <div className="sidebar-channel-name">{fb.name}</div>
+                <div className="sidebar-channel-sub mono">Facebook Page · on air</div>
+              </div>
+            </div>
+          ) : (
+            <div className="sidebar-channel-sub">No page connected</div>
+          )}
+        </div>
+
+        <nav className="sidebar-nav">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              end={item.to === '/'}
+              onClick={onClose}
+              className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
+            >
+              <span className="sidebar-link-icon">{item.icon}</span>
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+
+        <div className="sidebar-footer">
+          <div className="sidebar-profile">
+            <span className="sidebar-avatar">{profile?.avatar || '🧑'}</span>
+            <span className="sidebar-profile-name">{profile?.name}</span>
+          </div>
+          <button
+            className="sidebar-logout"
+            onClick={async () => {
+              await logout();
+              navigate('/login');
+            }}
+          >
+            Log out
+          </button>
+        </div>
+      </aside>
+    </>
   );
 }
