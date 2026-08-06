@@ -1,6 +1,7 @@
 // Paste your Firebase project's web config here.
 // Get it from: Firebase Console -> Project settings -> General -> "Your apps" -> SDK setup and config
 // This is free on Firebase's Spark (no-cost) plan for a personal project like this one.
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 export const firebaseConfig = {
   apiKey: "AIzaSyCpXwaoyv0RX2P24iVgQrbhm8vNg8M5Tnc",
   authDomain: "social-48c86.firebaseapp.com",
