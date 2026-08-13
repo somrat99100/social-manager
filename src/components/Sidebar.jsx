@@ -12,7 +12,7 @@ const navItems = [
 export default function Sidebar({ mobileOpen, onClose }) {
   const { profile, logout } = useAuth();
   const navigate = useNavigate();
-  const fb = profile?.fb;
+  const pages = profile?.pages || [];
 
   return (
     <>
@@ -24,13 +24,15 @@ export default function Sidebar({ mobileOpen, onClose }) {
         </div>
 
         <div className="sidebar-channel">
-          <TallyDot status={fb ? 'live' : 'idle'} />
-          {fb ? (
+          <TallyDot status={pages.length > 0 ? 'live' : 'idle'} />
+          {pages.length > 0 ? (
             <div className="sidebar-channel-info">
-              <img src={fb.avatar} alt="" className="sidebar-channel-avatar" />
+              <img src={pages[0].avatar} alt="" className="sidebar-channel-avatar" />
               <div>
-                <div className="sidebar-channel-name">{fb.name}</div>
-                <div className="sidebar-channel-sub mono">Facebook Page · on air</div>
+                <div className="sidebar-channel-name">{pages[0].name}</div>
+                <div className="sidebar-channel-sub mono">
+                  {pages.length > 1 ? `+${pages.length - 1} more page${pages.length > 2 ? 's' : ''} · on air` : 'Facebook Page · on air'}
+                </div>
               </div>
             </div>
           ) : (

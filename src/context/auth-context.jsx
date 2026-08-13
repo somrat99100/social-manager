@@ -90,7 +90,7 @@ export function AuthProvider({ children }) {
     await setDoc(doc(db, 'users', user.uid), {
       name: data.name,
       avatar: data.avatar,
-      fb: null,
+      pages: [],
       geminiApiKey: '',
       createdAt: serverTimestamp(),
     });

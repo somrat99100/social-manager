@@ -14,7 +14,7 @@ export default function Home() {
   const { user, profile } = useAuth();
   const [tab, setTab] = useState('facebook');
   const [posts, setPosts] = useState([]);
-  const fb = profile?.fb;
+  const pages = profile?.pages || [];
 
   useEffect(() => {
     if (!user) return;
@@ -42,7 +42,7 @@ export default function Home() {
             className={`platform-tab ${tab === p.key ? 'platform-tab-active' : ''}`}
             onClick={() => setTab(p.key)}
           >
-            <TallyDot status={p.key === 'facebook' && fb ? 'live' : 'idle'} />
+            <TallyDot status={p.key === 'facebook' && pages.length > 0 ? 'live' : 'idle'} />
             <span className="platform-tab-icon">{p.icon}</span>
             {p.label}
             {!p.live && <span className="badge badge-idle" style={{ marginLeft: 6 }}>Soon</span>}
@@ -52,23 +52,27 @@ export default function Home() {
 
       {tab === 'facebook' ? (
         <>
-          {fb ? (
-            <div className="card page-card channel-card">
-              <img src={fb.avatar} alt="" className="channel-card-avatar" />
-              <div className="channel-card-info">
-                <div className="channel-card-name">
-                  {fb.name}
-                  <TallyDot status="live" />
+          {pages.length > 0 ? (
+            <>
+              {pages.map((fb) => (
+                <div key={fb.pageId} className="card page-card channel-card">
+                  <img src={fb.avatar} alt="" className="channel-card-avatar" />
+                  <div className="channel-card-info">
+                    <div className="channel-card-name">
+                      {fb.name}
+                      <TallyDot status="live" />
+                    </div>
+                    <div className="field-hint mono">
+                      {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Facebook Page'}
+                    </div>
+                  </div>
+                  <div className="channel-card-actions">
+                    <Link to="/create" className="btn btn-primary btn-sm">Create post</Link>
+                    <Link to="/settings" className="btn btn-ghost btn-sm">Manage</Link>
+                  </div>
                 </div>
-                <div className="field-hint mono">
-                  {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Facebook Page'}
-                </div>
-              </div>
-              <div className="channel-card-actions">
-                <Link to="/create" className="btn btn-primary btn-sm">Create post</Link>
-                <Link to="/settings" className="btn btn-ghost btn-sm">Manage</Link>
-              </div>
-            </div>
+              ))}
+            </>
           ) : (
             <div className="card page-card empty-card">
               <div className="empty-card-icon">f</div>

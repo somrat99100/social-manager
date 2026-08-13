@@ -1,6 +1,6 @@
 const BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
-const TEXT_MODEL = 'gemini-2.5-flash';
-const IMAGE_MODEL = 'gemini-2.5-flash-image'; // free-tier image generation ("Nano Banana")
+const TEXT_MODEL = 'gemini-3.5-flash';
+const IMAGE_MODEL = 'gemini-3.1-flash-image'; // free-tier image generation ("Nano Banana 2")
 
 async function callGemini(model, body, apiKey) {
   const res = await fetch(`${BASE}/${model}:generateContent`, {

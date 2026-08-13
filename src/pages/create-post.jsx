@@ -10,8 +10,11 @@ export default function CreatePost() {
   const { user, profile } = useAuth();
   const location = useLocation();
   const draftToEdit = location.state?.draft;
-  const fb = profile?.fb;
+  const pages = profile?.pages || [];
   const geminiKey = profile?.geminiApiKey;
+
+  const [selectedPageId, setSelectedPageId] = useState(draftToEdit?.fbPageId || null);
+  const fb = pages.find((p) => p.pageId === selectedPageId) || pages[0] || null;
 
   const [mode, setMode] = useState('manual'); // 'manual' | 'ai'
   const [caption, setCaption] = useState(draftToEdit?.caption || '');
@@ -53,7 +56,7 @@ export default function CreatePost() {
     });
     await savePost(
       user.uid,
-      { caption, imageDataUrl: imageDataUrl || null, status: 'posted', fbPostId: res.id },
+      { caption, imageDataUrl: imageDataUrl || null, status: 'posted', fbPostId: res.id, fbPageId: fb.pageId },
       editingId
     );
     setShowPreview(false);
@@ -61,7 +64,11 @@ export default function CreatePost() {
   };
 
   const handleSaveDraft = async () => {
-    await savePost(user.uid, { caption, imageDataUrl: imageDataUrl || null, status: 'draft' }, editingId);
+    await savePost(
+      user.uid,
+      { caption, imageDataUrl: imageDataUrl || null, status: 'draft', fbPageId: fb?.pageId || null },
+      editingId
+    );
     setShowPreview(false);
     setPostResult('draft');
   };
@@ -104,6 +111,17 @@ export default function CreatePost() {
           <h1>Create post</h1>
           <p className="field-hint">{fb ? `Publishing to ${fb.name}` : 'Connect a page to publish'}</p>
         </div>
+        {pages.length > 1 && (
+          <select
+            value={fb?.pageId || ''}
+            onChange={(e) => setSelectedPageId(e.target.value)}
+            style={{ maxWidth: 220 }}
+          >
+            {pages.map((p) => (
+              <option key={p.pageId} value={p.pageId}>{p.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="tab-strip">

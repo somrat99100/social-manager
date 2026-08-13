@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — SocialFlow</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 48px 24px 96px;
+      line-height: 1.6;
+      color: #26212e;
+      background: #faf8ff;
+    }
+    h1 { font-size: 28px; margin-bottom: 4px; }
+    .updated { color: #6b6478; font-size: 14px; margin-bottom: 32px; }
+    h2 { font-size: 19px; margin-top: 36px; }
+    ul { padding-left: 20px; }
+    li { margin-bottom: 6px; }
+    a { color: #7e14ff; }
+    .badge {
+      display: inline-block;
+      background: #863bff;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-bottom: 16px;
+    }
+  </style>
+</head>
+<body>
+  <span class="badge">SocialFlow</span>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: August 2026</p>
+
+  <p>
+    SocialFlow is a personal, single-user tool for managing posts on Facebook Pages that the
+    account owner administers. It is not a public service — access is restricted to one owner
+    account, and it does not collect or process data on behalf of any other person or business.
+  </p>
+
+  <h2>What data this app handles</h2>
+  <ul>
+    <li><strong>Facebook Page access tokens</strong> — used only to publish, preview, and manage posts on Pages the owner administers.</li>
+    <li><strong>Post content</strong> — captions and images the owner creates or uploads, stored so drafts and posting history can be reviewed later.</li>
+    <li><strong>Gemini API key</strong> — used only to call Google's Gemini API on the owner's behalf, to generate post ideas, captions, and images.</li>
+    <li><strong>Basic account info</strong> — an email address and display name used to sign in.</li>
+  </ul>
+
+  <h2>How this data is stored</h2>
+  <p>
+    All data is stored in a private database (Firebase Firestore) tied to the owner's individual
+    account, protected by access rules so only that account can read or write it. Tokens and API
+    keys are never committed to source code or shared with any third party.
+  </p>
+
+  <h2>How this data is used</h2>
+  <p>
+    Facebook tokens and the Gemini API key are used exclusively to make requests directly from the
+    owner's own browser to Facebook's Graph API and Google's Gemini API, in order to publish posts
+    and generate content the owner explicitly requests. No data is sold, shared, or used for
+    advertising, analytics, or any purpose beyond operating this personal tool.
+  </p>
+
+  <h2>Third-party services</h2>
+  <p>This app connects to:</p>
+  <ul>
+    <li><strong>Meta / Facebook Graph API</strong> — to publish and manage posts on the owner's own Pages.</li>
+    <li><strong>Google Gemini API</strong> — to generate captions, content ideas, and images.</li>
+    <li><strong>Firebase</strong> (Google) — for authentication and data storage.</li>
+  </ul>
+  <p>Each service's own privacy policy governs how they handle data sent to them.</p>
+
+  <h2>Data retention and deletion</h2>
+  <p>
+    Data is retained for as long as the owner's account exists. Facebook tokens and the Gemini API
+    key can be removed at any time from the app's Settings page. The owner can also revoke Facebook
+    access at any time from
+    <a href="https://www.facebook.com/settings?tab=business_tools" target="_blank" rel="noopener">
+      Facebook's Business Integrations settings
+    </a>, and revoke or regenerate the Gemini key at any time from Google AI Studio.
+  </p>
+
+  <h2>Contact</h2>
+  <p>
+    Questions about this policy can be directed to the app owner via the contact details on file
+    with the associated Facebook Developer account.
+  </p>
+</body>
+</html>

@@ -5,13 +5,14 @@ import TallyDot from '../components/tally-dot';
 
 export default function Settings() {
   const { profile, updateProfile } = useAuth();
-  const fb = profile?.fb;
+  const connectedPages = profile?.pages || [];
 
   const [userToken, setUserToken] = useState('');
-  const [pages, setPages] = useState([]);
+  const [foundPages, setFoundPages] = useState([]);
   const [loadingPages, setLoadingPages] = useState(false);
   const [fbError, setFbError] = useState('');
   const [showFbGuide, setShowFbGuide] = useState(false);
+  const [showConnectForm, setShowConnectForm] = useState(false);
 
   const [geminiKey, setGeminiKey] = useState(profile?.geminiApiKey || '');
   const [geminiSaved, setGeminiSaved] = useState(false);
@@ -23,11 +24,11 @@ export default function Settings() {
     if (!userToken.trim()) return;
     setFbError('');
     setLoadingPages(true);
-    setPages([]);
+    setFoundPages([]);
     try {
       const result = await fetchManagedPages(userToken.trim());
       if (result.length === 0) setFbError('That token worked, but no Pages were found for it.');
-      setPages(result);
+      setFoundPages(result);
     } catch (e) {
       setFbError(e.message);
     } finally {
@@ -37,27 +38,28 @@ export default function Settings() {
 
   const connectPage = async (page) => {
     try {
-      await updateProfile({
-        fb: {
-          pageId: page.id,
-          pageAccessToken: page.accessToken,
-          name: page.name,
-          avatar: page.avatar,
-          fanCount: page.fanCount,
-          connectedAt: Date.now(),
-        },
+      const next = connectedPages.filter((p) => p.pageId !== page.id);
+      next.push({
+        pageId: page.id,
+        pageAccessToken: page.accessToken,
+        name: page.name,
+        avatar: page.avatar,
+        fanCount: page.fanCount,
+        connectedAt: Date.now(),
       });
-      setPages([]);
+      await updateProfile({ pages: next });
+      setFoundPages((prev) => prev.filter((p) => p.id !== page.id));
       setUserToken('');
+      setShowConnectForm(false);
     } catch (e) {
       console.error('Failed to save connected page:', e);
       setFbError('Could not save that connection. Please try again.');
     }
   };
 
-  const disconnectPage = async () => {
+  const disconnectPage = async (pageId) => {
     try {
-      await updateProfile({ fb: null });
+      await updateProfile({ pages: connectedPages.filter((p) => p.pageId !== pageId) });
     } catch (e) {
       console.error('Failed to disconnect page:', e);
       setFbError('Could not disconnect right now. Please try again.');
@@ -88,22 +90,30 @@ export default function Settings() {
       {/* Facebook connect */}
       <div className="card page-card">
         <div className="settings-block-head">
-          <h3>Facebook Page</h3>
-          <TallyDot status={fb ? 'live' : 'idle'} />
+          <h3>Facebook Pages</h3>
+          <TallyDot status={connectedPages.length > 0 ? 'live' : 'idle'} />
         </div>
 
-        {fb ? (
-          <div className="channel-card" style={{ marginTop: 12 }}>
-            <img src={fb.avatar} alt="" className="channel-card-avatar" />
-            <div className="channel-card-info">
-              <div className="channel-card-name">{fb.name}</div>
-              <div className="field-hint mono">
-                {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Connected'}
+        {connectedPages.length > 0 && (
+          <div className="page-pick-list" style={{ marginTop: 12 }}>
+            {connectedPages.map((fb) => (
+              <div key={fb.pageId} className="channel-card">
+                <img src={fb.avatar} alt="" className="channel-card-avatar" />
+                <div className="channel-card-info">
+                  <div className="channel-card-name">{fb.name}</div>
+                  <div className="field-hint mono">
+                    {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Connected'}
+                  </div>
+                </div>
+                <button className="btn btn-danger btn-sm" onClick={() => disconnectPage(fb.pageId)}>
+                  Disconnect
+                </button>
               </div>
-            </div>
-            <button className="btn btn-danger btn-sm" onClick={disconnectPage}>Disconnect</button>
+            ))}
           </div>
-        ) : (
+        )}
+
+        {showConnectForm || connectedPages.length === 0 ? (
           <>
             <div className="field" style={{ marginTop: 14 }}>
               <label>Facebook Page access token</label>
@@ -120,27 +130,52 @@ export default function Settings() {
               {fbError && <div className="field-error">{fbError}</div>}
             </div>
 
-            {pages.length > 0 && (
+            {foundPages.length > 0 && (
               <div className="page-pick-list">
-                {pages.map((p) => (
-                  <div key={p.id} className="page-pick-row">
-                    <img src={p.avatar} alt="" className="channel-card-avatar" />
-                    <div className="channel-card-info">
-                      <div className="channel-card-name">{p.name}</div>
-                      <div className="field-hint mono">
-                        {p.fanCount != null ? `${p.fanCount.toLocaleString()} followers` : ''}
+                {foundPages.map((p) => {
+                  const alreadyConnected = connectedPages.some((c) => c.pageId === p.id);
+                  return (
+                    <div key={p.id} className="page-pick-row">
+                      <img src={p.avatar} alt="" className="channel-card-avatar" />
+                      <div className="channel-card-info">
+                        <div className="channel-card-name">{p.name}</div>
+                        <div className="field-hint mono">
+                          {p.fanCount != null ? `${p.fanCount.toLocaleString()} followers` : ''}
+                        </div>
                       </div>
+                      <button className="btn btn-accent btn-sm" onClick={() => connectPage(p)}>
+                        {alreadyConnected ? 'Reconnect' : 'Connect'}
+                      </button>
                     </div>
-                    <button className="btn btn-accent btn-sm" onClick={() => connectPage(p)}>Connect</button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
-            <button className="link-toggle" onClick={() => setShowFbGuide((v) => !v)}>
-              {showFbGuide ? 'Hide guide' : 'How do I get a token?'}
-            </button>
-            {showFbGuide && (
+            {connectedPages.length > 0 && (
+              <button
+                className="link-toggle"
+                onClick={() => {
+                  setShowConnectForm(false);
+                  setUserToken('');
+                  setFoundPages([]);
+                  setFbError('');
+                }}
+              >
+                Cancel
+              </button>
+            )}
+          </>
+        ) : (
+          <button className="btn btn-ghost" style={{ marginTop: 12 }} onClick={() => setShowConnectForm(true)}>
+            + Add another page
+          </button>
+        )}
+
+        <button className="link-toggle" onClick={() => setShowFbGuide((v) => !v)}>
+          {showFbGuide ? 'Hide guide' : 'How do I get a token?'}
+        </button>
+        {showFbGuide && (
               <div className="guide-panel">
                 <p className="field-hint" style={{ margin: '2px 0 10px', fontWeight: 600 }}>
                   Takes about 5 minutes. You only need to do this once — after that, Social Manager
@@ -173,9 +208,14 @@ export default function Settings() {
                         previous project — no need to make a new one, any app you own works fine here.
                       </li>
                       <li>
-                        If that app is in <strong>Live</strong> mode rather than{' '}
-                        <strong>Development</strong>, that's fine too — Graph API Explorer works either
-                        way for pulling your own token.
+                        Check the toggle near the top of the dashboard: if it says{' '}
+                        <strong>Development</strong> instead of <strong>Live</strong>, switch it to{' '}
+                        <strong>Live</strong> now. This matters — posts published through an app still in
+                        Development mode are only visible to that app's own Admins/Developers/Testers, not
+                        to the public or your Page's followers. Going Live may ask you to fill in a{' '}
+                        <strong>Privacy Policy URL</strong>, an <strong>App Icon</strong>, and a{' '}
+                        <strong>Category</strong> under Settings → Basic first — any simple hosted page
+                        works for the privacy policy.
                       </li>
                     </>
                   ) : (
@@ -186,9 +226,17 @@ export default function Settings() {
                       </li>
                       <li>
                         When asked what type of app, choose <strong>Business</strong> (or{' '}
-                        <strong>Other</strong> if Business isn't offered). Give it any name — this app is
-                        only used to generate your own token, so it never goes through Facebook's public
-                        app review.
+                        <strong>Other</strong> if Business isn't offered). Give it any name.
+                      </li>
+                      <li>
+                        Before generating a token, go to <strong>Settings → Basic</strong> and fill in a{' '}
+                        <strong>Privacy Policy URL</strong>, an <strong>App Icon</strong>, and a{' '}
+                        <strong>Category</strong>, then switch the toggle near the top of the dashboard
+                        from <strong>Development</strong> to <strong>Live</strong>. This step is easy to
+                        skip but it's essential — posts published while the app is still in Development
+                        mode are only visible to the app's own Admins/Developers/Testers, never to the
+                        public. Because you're only publishing to Pages you personally administer, this
+                        needs Standard Access, not a full Facebook App Review, so it's quick.
                       </li>
                     </>
                   )}
@@ -237,6 +285,13 @@ export default function Settings() {
                   account you logged in with isn't an admin of the Page — go back and re-check the boxes.
                 </p>
                 <p className="field-hint">
+                  <strong>Posts not showing up publicly?</strong> This almost always means the app is
+                  still in <strong>Development</strong> mode. Posts made through a dev-mode app are only
+                  visible to that app's own Admins/Developers/Testers — not your followers or the public.
+                  Switch the app to <strong>Live</strong> (Settings → Basic, then the toggle near the top
+                  of the dashboard) and reconnect.
+                </p>
+                <p className="field-hint">
                   <strong>Token expiry:</strong> the token you paste above is short-lived, but Social
                   Manager only uses it once to fetch your Page's own token, which typically lasts
                   around 60 days. If posting ever starts failing with an auth error, just repeat these
@@ -244,8 +299,6 @@ export default function Settings() {
                 </p>
               </div>
             )}
-          </>
-        )}
       </div>
 
       {/* Gemini key */}
