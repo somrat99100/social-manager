@@ -496,6 +496,47 @@ p { margin: 0; }
 .modal-close { background: none; border: none; font-size: 16px; color: var(--ink-faint); }
 .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
+/* Web AI bridge modal (Gemini/ChatGPT docked-window illusion) */
+.bridge-modal { max-width: 480px; }
+.bridge-window {
+  border: 1px solid var(--line); border-radius: var(--radius-m); overflow: hidden; background: var(--paper);
+}
+.bridge-window-bar {
+  display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+  background: var(--surface); border-bottom: 1px solid var(--line);
+}
+.bridge-window-dots { display: flex; gap: 5px; }
+.bridge-window-dots span {
+  width: 9px; height: 9px; border-radius: 50%; background: var(--line);
+}
+.bridge-window-url {
+  flex: 1; font-size: 11.5px; color: var(--ink-soft); background: var(--paper);
+  border: 1px solid var(--line); border-radius: 20px; padding: 4px 10px;
+  display: flex; align-items: center; gap: 5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bridge-window-lock { font-size: 10px; }
+.bridge-status-pill {
+  font-size: 10.5px; font-weight: 600; padding: 3px 8px; border-radius: 20px; white-space: nowrap;
+}
+.bridge-status-live { color: var(--ok); background: var(--ok-soft); }
+.bridge-status-closed { color: var(--ink-faint); background: var(--line); }
+.bridge-window-body { padding: 22px 16px; text-align: center; }
+.bridge-window-icon {
+  width: 42px; height: 42px; margin: 0 auto 10px; border-radius: 12px;
+  background: var(--accent-soft); color: var(--accent); font-size: 19px;
+  display: flex; align-items: center; justify-content: center;
+}
+.bridge-window-title { font-weight: 600; margin: 0 0 4px; }
+.bridge-steps { margin: 16px 0 0; padding-left: 20px; font-size: 13px; color: var(--ink-soft); line-height: 1.6; }
+.bridge-drop-zone {
+  margin-top: 14px; border: 1.5px dashed var(--line); border-radius: var(--radius-m);
+  padding: 18px 12px; text-align: center; cursor: text; font-size: 13px; font-weight: 600;
+  color: var(--ink-soft); transition: border-color .15s, background .15s;
+}
+.bridge-drop-zone:focus, .bridge-drop-zone:focus-visible { border-color: var(--accent); background: var(--accent-soft); outline: none; }
+.bridge-drop-zone-active { border-color: var(--accent); background: var(--accent-soft); }
+.bridge-drop-zone-icon { font-size: 20px; margin-bottom: 4px; }
+
 /* Auth screens */
 .auth-screen {
   min-height: 100vh; display: flex; align-items: center; justify-content: center;

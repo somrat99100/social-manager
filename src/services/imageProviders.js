@@ -2,9 +2,9 @@ import { generateImage as geminiGenerateImage } from './gemini';
 import { generateImage as pollinationsGenerateImage } from './pollinations';
 
 export const IMAGE_PROVIDER_OPTIONS = [
-  { value: 'auto', label: 'Auto (Gemini, falls back to free)' },
-  { value: 'gemini', label: 'Gemini (uses your API key)' },
   { value: 'free', label: 'Free — no key needed (FLUX)' },
+  { value: 'auto', label: 'Auto (tries Gemini, falls back to free)' },
+  { value: 'gemini', label: 'Gemini (uses your API key, needs billing)' },
 ];
 
 /**

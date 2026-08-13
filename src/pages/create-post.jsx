@@ -14,6 +14,7 @@ import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imagePro
 import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText } from '../services/content';
 import PostPreviewModal from '../components/post-preview-modal';
+import WebAiBridgeModal from '../components/web-ai-bridge-modal';
 import CaptionField from '../components/caption-field';
 
 const INTERVAL_PRESETS = [
@@ -300,7 +301,9 @@ function AiComposer({ geminiKey, user, profile, updateProfile, fb, caption, setC
         <div className="empty-card-icon">✦</div>
         <h3>Add a Gemini API key</h3>
         <p className="field-hint" style={{ margin: '6px 0 16px' }}>
-          The AI agent needs your free Gemini API key to suggest content, write captions, and generate images.
+          The AI agent needs a free Gemini API key to suggest content and write captions (this part is genuinely
+          free — no billing needed). Images don't need a key at all: they use a free provider by default, or you
+          can generate them yourself in the Gemini/ChatGPT web apps.
         </p>
         <Link to="/settings" className="btn btn-accent">Add key in Connect profile</Link>
       </div>
@@ -384,10 +387,11 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
 
   const [imagePrompt, setImagePrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
-  const [imageProvider, setImageProvider] = useState('auto');
+  const [imageProvider, setImageProvider] = useState('free');
   const [imageProviderUsed, setImageProviderUsed] = useState(null);
   const [loadingImage, setLoadingImage] = useState(false);
   const [suggestingPrompt, setSuggestingPrompt] = useState(false);
+  const [bridgeProvider, setBridgeProvider] = useState(null); // 'gemini' | 'chatgpt' | null
   const [error, setError] = useState('');
 
   const runSuggest = async () => {
@@ -456,6 +460,13 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
     } finally {
       setLoadingImage(false);
     }
+  };
+
+  const handleBridgeCapture = ({ base64, mimeType, dataUrl, label }) => {
+    setError('');
+    setImageBase64(base64);
+    setImageDataUrl(dataUrl || `data:${mimeType};base64,${base64}`);
+    setImageProviderUsed({ provider: 'web', label });
   };
 
   return (
@@ -564,6 +575,39 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
             </button>
           </div>
         </div>
+
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>Or generate it yourself in Gemini / ChatGPT (free, higher quality)</label>
+          <p className="field-hint" style={{ marginTop: -4, marginBottom: 8 }}>
+            Docks the real web app in a window next to this one — they can't be embedded directly, but this keeps
+            you in the same flow: generate the image there, copy it, and bring it straight back here.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setBridgeProvider('gemini')}
+              disabled={!imagePrompt.trim()}
+            >
+              ✦ Open Gemini
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setBridgeProvider('chatgpt')}
+              disabled={!imagePrompt.trim()}
+            >
+              ⌘ Open ChatGPT
+            </button>
+          </div>
+        </div>
+
+        {bridgeProvider && (
+          <WebAiBridgeModal
+            provider={bridgeProvider}
+            prompt={imagePrompt}
+            onCapture={handleBridgeCapture}
+            onClose={() => setBridgeProvider(null)}
+          />
+        )}
         {imageDataUrl && (
           <div className="image-preview-row">
             <img src={imageDataUrl} alt="" className="image-preview-thumb" />
@@ -581,7 +625,9 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
         )}
         {imageProviderUsed && (
           <p className="field-hint" style={{ marginTop: 6 }}>
-            {imageProviderUsed.provider === 'free'
+            {imageProviderUsed.provider === 'web'
+              ? `Brought in from the ${imageProviderUsed.label} web app.`
+              : imageProviderUsed.provider === 'free'
               ? imageProviderUsed.fallbackFrom
                 ? `Generated with the free provider — Gemini couldn't (${imageProviderUsed.fallbackFrom}).`
                 : 'Generated with the free provider (no API key needed).'
@@ -612,7 +658,7 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
   const [emojiLevel, setEmojiLevel] = useState(saved.emojiLevel || 'tasteful');
   const [includeImages, setIncludeImages] = useState(saved.includeImages !== false);
   const [imageAspectRatio, setImageAspectRatio] = useState(saved.imageAspectRatio || '1:1');
-  const [imageProvider, setImageProvider] = useState(saved.imageProvider || 'auto');
+  const [imageProvider, setImageProvider] = useState(saved.imageProvider || 'free');
   const [postsPerTopic, setPostsPerTopic] = useState(saved.postsPerTopic || 3);
 
   const [intervalPreset, setIntervalPreset] = useState(
