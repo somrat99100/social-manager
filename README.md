@@ -11,7 +11,17 @@ images — all on free tiers. Preview before you publish, and post now or save a
 - **Home** — platform tabs (Facebook live, Instagram/YouTube reserved for later), shows your connected page with name + photo, recent activity
 - **Create post**
   - **Manually** — caption + photo upload, live Facebook-style preview
-  - **AI agent** — give it a topic, it suggests content angles, pick one, it writes 3 captions, pick/edit, describe an image, it generates one (Gemini's free image tier)
+  - **AI agent** — two modes:
+    - **Quick create** — give it a topic, pick a voice (friendly, bold & trendy, professional, playful,
+      inspirational, storytelling), it suggests content angles (with a 🔥 trending pick), writes 3 humanized,
+      Facebook-native captions with a real hook line, natural line breaks, and an honest call to action —
+      hashtags and emoji are optional and tuned to taste. Describe an image (or let it suggest a prompt from
+      your caption) and it generates one on Gemini's free image tier.
+    - **Auto-pilot** — give it one or more topics (e.g. "Agriculture", "weekend specials"), a voice, and a
+      posting interval, and it writes a full batch of on-trend, humanized posts — a fresh angle and caption per
+      slot, an optional matching AI image, and schedules the whole batch directly on Facebook's own servers
+      at `now + n × interval`, so it keeps posting on schedule even if you close the browser. Settings are
+      remembered so you can top up the queue again later.
   - **Saved text** — save any caption (written or AI-generated) and reuse it later
   - Every post goes through a **preview** before you choose **Post now** or **Save as draft**
 - **Post from Google Sheet** — connect a public sheet (`Caption` + `Image Link` columns), fetch its rows into a
@@ -51,6 +61,22 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}
+```
+
+**For Auto-pilot's AI-generated images:** Build -> Storage -> Get started (still free on Spark, with a small
+daily quota). Auto-pilot uploads each generated image there to get a public URL, because Facebook's
+*scheduling* API can only fetch an image from a URL — it can't accept raw image bytes for a future-dated
+post. (Quick create and Post now still work without Storage; only Auto-pilot's image generation needs it.)
+Recommended Storage rules, same owner-only pattern as Firestore above:
+```
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{uid}/{allPaths=**} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
     }
   }

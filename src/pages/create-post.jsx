@@ -1,14 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
-import { publishToPage } from '../services/facebook';
-import { suggestContentIdeas, generateCaptions, generateImage } from '../services/gemini';
+import { publishToPage, schedulePost } from '../services/facebook';
+import {
+  suggestContentIdeas,
+  generateCaptions,
+  generateImage,
+  generateAutoPost,
+  suggestImagePrompt,
+  TONE_OPTIONS,
+  IMAGE_ASPECT_OPTIONS,
+} from '../services/gemini';
+import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText } from '../services/content';
 import PostPreviewModal from '../components/post-preview-modal';
 import CaptionField from '../components/caption-field';
 
+const INTERVAL_PRESETS = [
+  { label: 'Every 30 minutes', hours: 0.5 },
+  { label: 'Every 1 hour', hours: 1 },
+  { label: 'Every 2 hours', hours: 2 },
+  { label: 'Every 4 hours', hours: 4 },
+  { label: 'Every 6 hours', hours: 6 },
+  { label: 'Every 12 hours', hours: 12 },
+  { label: 'Every 24 hours', hours: 24 },
+  { label: 'Custom', hours: 'custom' },
+];
+const MIN_CUSTOM_HOURS = 0.25; // 15 min — Facebook's floor is 10 min
+const MAX_SCHEDULE_SECONDS = 75 * 24 * 3600 - 300; // Facebook allows up to 75 days out
+const MAX_TOPICS = 8;
+
 export default function CreatePost() {
-  const { user, profile } = useAuth();
+  const { user, profile, updateProfile } = useAuth();
   const location = useLocation();
   const draftToEdit = location.state?.draft;
   const pages = profile?.pages || [];
@@ -151,6 +174,10 @@ export default function CreatePost() {
           ) : (
             <AiComposer
               geminiKey={geminiKey}
+              user={user}
+              profile={profile}
+              updateProfile={updateProfile}
+              fb={fb}
               caption={caption}
               setCaption={setCaption}
               imageDataUrl={imageDataUrl}
@@ -160,18 +187,20 @@ export default function CreatePost() {
             />
           )}
 
-          <div className="library-toggle">
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowLibrary((v) => !v)}>
-              {showLibrary ? 'Hide saved text' : `Saved text (${savedTexts.length})`}
-            </button>
-            {caption.trim() && (
-              <button className="btn btn-ghost btn-sm" onClick={() => user && saveText(user.uid, caption)}>
-                💾 Save this caption
+          {mode === 'manual' && (
+            <div className="library-toggle">
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowLibrary((v) => !v)}>
+                {showLibrary ? 'Hide saved text' : `Saved text (${savedTexts.length})`}
               </button>
-            )}
-          </div>
+              {caption.trim() && (
+                <button className="btn btn-ghost btn-sm" onClick={() => user && saveText(user.uid, caption)}>
+                  💾 Save this caption
+                </button>
+              )}
+            </div>
+          )}
 
-          {showLibrary && (
+          {mode === 'manual' && showLibrary && (
             <div className="library-list">
               {savedTexts.length === 0 && <p className="field-hint">No saved captions yet.</p>}
               {savedTexts.map((t) => (
@@ -186,14 +215,16 @@ export default function CreatePost() {
             </div>
           )}
 
-          <button
-            className="btn btn-accent btn-block"
-            style={{ marginTop: 18 }}
-            disabled={!caption.trim() && !imageDataUrl}
-            onClick={() => setShowPreview(true)}
-          >
-            Preview post
-          </button>
+          {mode === 'manual' && (
+            <button
+              className="btn btn-accent btn-block"
+              style={{ marginTop: 18 }}
+              disabled={!caption.trim() && !imageDataUrl}
+              onClick={() => setShowPreview(true)}
+            >
+              Preview post
+            </button>
+          )}
         </div>
 
         <div className="composer-side">
@@ -258,18 +289,10 @@ function ManualComposer({ caption, setCaption, imageDataUrl, onFileChange, fileR
   );
 }
 
-function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageDataUrl, setImageBase64, onSaveText }) {
-  const [topic, setTopic] = useState('');
-  const [ideas, setIdeas] = useState([]);
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [selectedAngle, setSelectedAngle] = useState(null);
+/* ================= AI agent ================= */
 
-  const [captionOptions, setCaptionOptions] = useState([]);
-  const [loadingCaptions, setLoadingCaptions] = useState(false);
-
-  const [imagePrompt, setImagePrompt] = useState('');
-  const [loadingImage, setLoadingImage] = useState(false);
-  const [error, setError] = useState('');
+function AiComposer({ geminiKey, user, profile, updateProfile, fb, caption, setCaption, imageDataUrl, setImageDataUrl, setImageBase64, onSaveText }) {
+  const [aiMode, setAiMode] = useState('quick'); // 'quick' | 'autopilot'
 
   if (!geminiKey) {
     return (
@@ -284,11 +307,94 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
     );
   }
 
+  return (
+    <div className="card page-card ai-agent-card">
+      <div className="ai-agent-head">
+        <span className="ai-agent-badge">✦ AI agent</span>
+        <p className="field-hint" style={{ marginTop: 6 }}>
+          Trendy, humanized captions built for how people actually scroll Facebook — pick a voice, and let it write.
+        </p>
+      </div>
+
+      <div className="guide-tabs ai-mode-tabs">
+        <button className={`guide-tab-btn ${aiMode === 'quick' ? 'guide-tab-btn-active' : ''}`} onClick={() => setAiMode('quick')}>
+          Quick create
+        </button>
+        <button className={`guide-tab-btn ${aiMode === 'autopilot' ? 'guide-tab-btn-active' : ''}`} onClick={() => setAiMode('autopilot')}>
+          Auto-pilot ✨
+        </button>
+      </div>
+
+      {aiMode === 'quick' ? (
+        <QuickCreate
+          geminiKey={geminiKey}
+          caption={caption}
+          setCaption={setCaption}
+          imageDataUrl={imageDataUrl}
+          setImageDataUrl={setImageDataUrl}
+          setImageBase64={setImageBase64}
+          onSaveText={onSaveText}
+        />
+      ) : (
+        <AutoPilot geminiKey={geminiKey} user={user} profile={profile} updateProfile={updateProfile} fb={fb} />
+      )}
+    </div>
+  );
+}
+
+function ToneControls({ tone, setTone, emojiLevel, setEmojiLevel, includeHashtags, setIncludeHashtags }) {
+  return (
+    <div className="tone-controls-row">
+      <div className="field" style={{ marginBottom: 0 }}>
+        <label>Voice</label>
+        <select value={tone} onChange={(e) => setTone(e.target.value)}>
+          {TONE_OPTIONS.map((t) => (
+            <option key={t.value} value={t.value}>{t.label}</option>
+          ))}
+        </select>
+      </div>
+      <div className="field" style={{ marginBottom: 0 }}>
+        <label>Emoji</label>
+        <select value={emojiLevel} onChange={(e) => setEmojiLevel(e.target.value)}>
+          <option value="none">None</option>
+          <option value="tasteful">Tasteful</option>
+          <option value="expressive">Expressive</option>
+        </select>
+      </div>
+      <label className="checkbox-row tone-controls-checkbox">
+        <input type="checkbox" checked={includeHashtags} onChange={(e) => setIncludeHashtags(e.target.checked)} />
+        Hashtags
+      </label>
+    </div>
+  );
+}
+
+function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDataUrl, setImageBase64, onSaveText }) {
+  const [topic, setTopic] = useState('');
+  const [tone, setTone] = useState('trendy');
+  const [includeHashtags, setIncludeHashtags] = useState(true);
+  const [emojiLevel, setEmojiLevel] = useState('tasteful');
+
+  const [ideas, setIdeas] = useState([]);
+  const [loadingIdeas, setLoadingIdeas] = useState(false);
+  const [selectedAngle, setSelectedAngle] = useState(null);
+
+  const [captionOptions, setCaptionOptions] = useState([]);
+  const [loadingCaptions, setLoadingCaptions] = useState(false);
+
+  const [imagePrompt, setImagePrompt] = useState('');
+  const [aspectRatio, setAspectRatio] = useState('1:1');
+  const [loadingImage, setLoadingImage] = useState(false);
+  const [suggestingPrompt, setSuggestingPrompt] = useState(false);
+  const [error, setError] = useState('');
+
   const runSuggest = async () => {
     if (!topic.trim()) return;
     setError('');
     setLoadingIdeas(true);
     setIdeas([]);
+    setSelectedAngle(null);
+    setCaptionOptions([]);
     try {
       const result = await suggestContentIdeas(topic, geminiKey);
       setIdeas(result);
@@ -306,7 +412,7 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
     setCaptionOptions([]);
     try {
       const brief = `${topic} — angle: ${angle.title}. ${angle.description}`;
-      const result = await generateCaptions(brief, geminiKey);
+      const result = await generateCaptions(brief, geminiKey, { tone, includeHashtags, emojiLevel });
       setCaptionOptions(result);
     } catch (e) {
       setError(e.message);
@@ -315,14 +421,29 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
     }
   };
 
+  const runSuggestImagePrompt = async () => {
+    const context = caption.trim() || (selectedAngle ? `${topic} — ${selectedAngle.title}` : topic);
+    if (!context.trim()) return;
+    setError('');
+    setSuggestingPrompt(true);
+    try {
+      const p = await suggestImagePrompt(context, geminiKey);
+      if (p) setImagePrompt(p);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setSuggestingPrompt(false);
+    }
+  };
+
   const runImage = async () => {
     if (!imagePrompt.trim()) return;
     setError('');
     setLoadingImage(true);
     try {
-      const base64 = await generateImage(imagePrompt, geminiKey);
+      const { base64, mimeType } = await generateImage(imagePrompt, geminiKey, { aspectRatio });
       setImageBase64(base64);
-      setImageDataUrl(`data:image/png;base64,${base64}`);
+      setImageDataUrl(`data:${mimeType};base64,${base64}`);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -331,17 +452,31 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
   };
 
   return (
-    <div className="card page-card">
+    <>
       <div className="ai-block">
         <div className="field">
           <label>1. What's the topic?</label>
           <div style={{ display: 'flex', gap: 8 }}>
-            <input value={topic} onChange={(e) => setTopic(e.target.value)} placeholder="e.g. weekend cafe special" />
+            <input
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && runSuggest()}
+              placeholder="e.g. weekend cafe special"
+            />
             <button className="btn btn-primary" onClick={runSuggest} disabled={loadingIdeas || !topic.trim()}>
               {loadingIdeas ? 'Thinking…' : 'Suggest ideas'}
             </button>
           </div>
         </div>
+
+        <ToneControls
+          tone={tone}
+          setTone={setTone}
+          emojiLevel={emojiLevel}
+          setEmojiLevel={setEmojiLevel}
+          includeHashtags={includeHashtags}
+          setIncludeHashtags={setIncludeHashtags}
+        />
 
         {ideas.length > 0 && (
           <div className="idea-grid">
@@ -351,7 +486,10 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
                 className={`idea-card ${selectedAngle?.title === idea.title ? 'idea-card-active' : ''}`}
                 onClick={() => runCaptions(idea)}
               >
-                <div className="idea-card-title">{idea.title}</div>
+                <div className="idea-card-title">
+                  {idea.title}
+                  {idea.trending && <span className="trend-badge">🔥 Trending</span>}
+                </div>
                 <div className="field-hint">{idea.description}</div>
               </button>
             ))}
@@ -361,14 +499,19 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
 
       {selectedAngle && (
         <div className="ai-block">
-          <label className="field-label-standalone">2. Pick a caption</label>
+          <div className="caption-step-head">
+            <label className="field-label-standalone" style={{ marginBottom: 0 }}>2. Pick a caption</label>
+            {!loadingCaptions && captionOptions.length > 0 && (
+              <button className="btn btn-ghost btn-sm" onClick={() => runCaptions(selectedAngle)}>🔁 Regenerate</button>
+            )}
+          </div>
           {loadingCaptions ? (
-            <p className="field-hint">Writing captions…</p>
+            <p className="field-hint">Writing trendy captions…</p>
           ) : (
             <div className="caption-options">
               {captionOptions.map((c, i) => (
                 <div key={i} className={`caption-option ${caption === c ? 'caption-option-active' : ''}`}>
-                  <p>{c}</p>
+                  <p style={{ whiteSpace: 'pre-wrap' }}>{c}</p>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <button className="btn btn-primary btn-sm" onClick={() => setCaption(c)}>Use this</button>
                     <button className="btn btn-ghost btn-sm" onClick={() => onSaveText(c)}>💾 Save</button>
@@ -389,8 +532,23 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
               onChange={(e) => setImagePrompt(e.target.value)}
               placeholder="Describe the image you want…"
             />
+            <button
+              className="btn btn-ghost"
+              onClick={runSuggestImagePrompt}
+              disabled={suggestingPrompt || (!caption.trim() && !topic.trim())}
+              title="Suggest a prompt based on your caption"
+            >
+              {suggestingPrompt ? '…' : '✨ Suggest'}
+            </button>
+          </div>
+          <div className="image-gen-row">
+            <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} title="Image shape">
+              {IMAGE_ASPECT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
             <button className="btn btn-primary" onClick={runImage} disabled={loadingImage || !imagePrompt.trim()}>
-              {loadingImage ? 'Generating…' : 'Generate'}
+              {loadingImage ? 'Generating…' : imageDataUrl ? '🔁 Regenerate' : 'Generate'}
             </button>
           </div>
         </div>
@@ -416,6 +574,354 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
       </div>
 
       {error && <div className="field-error">{error}</div>}
+    </>
+  );
+}
+
+/* ---------- Auto-pilot: multi-topic recurring generation ---------- */
+
+function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
+  const saved = profile?.aiAutopilot || {};
+
+  const [topics, setTopics] = useState(saved.topics || []);
+  const [topicInput, setTopicInput] = useState('');
+  const [tone, setTone] = useState(saved.tone || 'trendy');
+  const [includeHashtags, setIncludeHashtags] = useState(saved.includeHashtags !== false);
+  const [emojiLevel, setEmojiLevel] = useState(saved.emojiLevel || 'tasteful');
+  const [includeImages, setIncludeImages] = useState(saved.includeImages !== false);
+  const [imageAspectRatio, setImageAspectRatio] = useState(saved.imageAspectRatio || '1:1');
+  const [postsPerTopic, setPostsPerTopic] = useState(saved.postsPerTopic || 3);
+
+  const [intervalPreset, setIntervalPreset] = useState(
+    saved.intervalHours && INTERVAL_PRESETS.some((p) => p.hours === saved.intervalHours) ? saved.intervalHours : 6
+  );
+  const [customHours, setCustomHours] = useState(
+    saved.intervalHours && !INTERVAL_PRESETS.some((p) => p.hours === saved.intervalHours) ? saved.intervalHours : 2
+  );
+  const intervalHours = intervalPreset === 'custom' ? Number(customHours) || MIN_CUSTOM_HOURS : intervalPreset;
+  const [postFirstNow, setPostFirstNow] = useState(saved.postFirstNow !== false);
+
+  const [running, setRunning] = useState(false);
+  const [queue, setQueue] = useState([]);
+  const [error, setError] = useState('');
+
+  const totalPosts = topics.length * postsPerTopic;
+
+  const addTopic = () => {
+    const raw = topicInput.trim();
+    if (!raw) return;
+    const parts = raw.split(',').map((s) => s.trim()).filter(Boolean);
+    setTopics((prev) => {
+      const next = [...prev];
+      for (const p of parts) {
+        if (next.length >= MAX_TOPICS) break;
+        if (!next.some((t) => t.toLowerCase() === p.toLowerCase())) next.push(p);
+      }
+      return next;
+    });
+    setTopicInput('');
+  };
+
+  const removeTopic = (t) => setTopics((prev) => prev.filter((x) => x !== t));
+
+  const runAutopilot = async () => {
+    if (!fb) {
+      setError('Connect a Facebook Page first, in Connect profile.');
+      return;
+    }
+    if (topics.length === 0) {
+      setError('Add at least one topic to auto-post about.');
+      return;
+    }
+    setError('');
+    setRunning(true);
+
+    if (user) {
+      updateProfile({
+        aiAutopilot: {
+          topics,
+          tone,
+          includeHashtags,
+          emojiLevel,
+          includeImages,
+          imageAspectRatio,
+          postsPerTopic,
+          intervalHours,
+          postFirstNow,
+        },
+      }).catch(() => {});
+    }
+
+    // Round-robin the topics so consecutive posts don't repeat the same one.
+    const slots = [];
+    for (let r = 0; r < postsPerTopic; r++) {
+      for (const t of topics) slots.push(t);
+    }
+    const initialQueue = slots.map((t, i) => ({ id: `${Date.now()}-${i}`, topic: t, state: 'pending' }));
+    setQueue(initialQueue);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const intervalSec = Math.round(intervalHours * 3600);
+    const recentByTopic = {};
+    let scheduleSteps = 0;
+
+    for (let i = 0; i < slots.length; i++) {
+      const topic = slots[i];
+      const id = initialQueue[i].id;
+      setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'writing' } : q)));
+
+      try {
+        const recentAngles = recentByTopic[topic] || [];
+        const post = await generateAutoPost({ topic, tone, includeHashtags, emojiLevel, recentAngles }, geminiKey);
+        if (!post || !post.caption) throw new Error('The AI agent did not return a usable post — it will skip this slot.');
+        recentByTopic[topic] = [...recentAngles, post.angle].filter(Boolean).slice(-5);
+
+        let imageUrl = null;
+        if (includeImages && post.imagePrompt) {
+          setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'image', caption: post.caption, angle: post.angle } : q)));
+          const { base64, mimeType } = await generateImage(post.imagePrompt, geminiKey, { aspectRatio: imageAspectRatio });
+          imageUrl = await uploadGeneratedImage(user.uid, base64, mimeType);
+        }
+
+        const isImmediate = postFirstNow && i === 0;
+        setQueue((prev) =>
+          prev.map((q) => (q.id === id ? { ...q, state: 'scheduling', caption: post.caption, angle: post.angle, imageUrl } : q))
+        );
+
+        if (isImmediate) {
+          const res = await publishToPage({
+            pageId: fb.pageId,
+            pageAccessToken: fb.pageAccessToken,
+            message: post.caption,
+            imageUrl: imageUrl || undefined,
+          });
+          await savePost(user.uid, {
+            caption: post.caption,
+            imageUrl: imageUrl || null,
+            status: 'posted',
+            fbPostId: res.id,
+            fbPageId: fb.pageId,
+            source: 'ai-autopilot',
+            topic,
+            angle: post.angle || null,
+          });
+          setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'posted' } : q)));
+        } else {
+          scheduleSteps += 1;
+          const publishAt = nowSec + scheduleSteps * intervalSec;
+          if (publishAt - nowSec > MAX_SCHEDULE_SECONDS) {
+            setQueue((prev) =>
+              prev.map((q) =>
+                q.id === id
+                  ? { ...q, state: 'failed', message: "Beyond Facebook's 75-day scheduling limit — lower the count or shorten the interval." }
+                  : q
+              )
+            );
+            continue;
+          }
+          const res = await schedulePost({
+            pageId: fb.pageId,
+            pageAccessToken: fb.pageAccessToken,
+            message: post.caption,
+            publishTimeUnix: publishAt,
+            imageUrl: imageUrl || undefined,
+          });
+          await savePost(user.uid, {
+            caption: post.caption,
+            imageUrl: imageUrl || null,
+            status: 'scheduled',
+            fbPostId: res.id,
+            fbPageId: fb.pageId,
+            scheduledAt: publishAt * 1000,
+            source: 'ai-autopilot',
+            topic,
+            angle: post.angle || null,
+          });
+          setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'scheduled', scheduledFor: publishAt * 1000 } : q)));
+        }
+      } catch (e) {
+        setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'failed', message: e.message } : q)));
+      }
+    }
+
+    setRunning(false);
+  };
+
+  const finished = !running && queue.length > 0 && queue.every((q) => q.state === 'posted' || q.state === 'scheduled' || q.state === 'failed');
+
+  return (
+    <div>
+      <div className="ai-block">
+        <div className="field">
+          <label>Topics to auto-post about</label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              value={topicInput}
+              onChange={(e) => setTopicInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addTopic();
+                }
+              }}
+              placeholder="e.g. Agriculture — press Enter to add"
+              disabled={running}
+            />
+            <button className="btn btn-ghost" onClick={addTopic} disabled={running || !topicInput.trim()}>Add</button>
+          </div>
+          {topics.length > 0 && (
+            <div className="chip-row">
+              {topics.map((t) => (
+                <span key={t} className="chip">
+                  {t}
+                  {!running && (
+                    <button type="button" onClick={() => removeTopic(t)} aria-label={`Remove ${t}`}>✕</button>
+                  )}
+                </span>
+              ))}
+            </div>
+          )}
+          <p className="field-hint">
+            Add as many topics as you like — Agriculture, weekend specials, fitness tips… each post in the queue
+            rotates through them with a fresh angle every time.
+          </p>
+        </div>
+
+        <ToneControls
+          tone={tone}
+          setTone={setTone}
+          emojiLevel={emojiLevel}
+          setEmojiLevel={setEmojiLevel}
+          includeHashtags={includeHashtags}
+          setIncludeHashtags={setIncludeHashtags}
+        />
+
+        <div className="image-gen-row">
+          <label className="checkbox-row" style={{ marginTop: 0 }}>
+            <input type="checkbox" checked={includeImages} onChange={(e) => setIncludeImages(e.target.checked)} disabled={running} />
+            Generate a matching AI image for every post
+          </label>
+          {includeImages && (
+            <select
+              value={imageAspectRatio}
+              onChange={(e) => setImageAspectRatio(e.target.value)}
+              disabled={running}
+              title="Image shape"
+            >
+              {IMAGE_ASPECT_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      </div>
+
+      <div className="ai-block">
+        <label className="field-label-standalone">Posting schedule</label>
+        <div className="schedule-settings-grid">
+          <div className="field">
+            <label>Posts per topic</label>
+            <input
+              type="number"
+              min={1}
+              max={10}
+              value={postsPerTopic}
+              onChange={(e) => setPostsPerTopic(Math.max(1, Math.min(10, Number(e.target.value) || 1)))}
+              disabled={running}
+            />
+          </div>
+          <div className="field">
+            <label>Post every</label>
+            <select
+              value={intervalPreset}
+              onChange={(e) => setIntervalPreset(e.target.value === 'custom' ? 'custom' : Number(e.target.value))}
+              disabled={running}
+            >
+              {INTERVAL_PRESETS.map((p) => (
+                <option key={p.label} value={p.hours}>{p.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        {intervalPreset === 'custom' && (
+          <div className="field">
+            <label>Custom interval (hours)</label>
+            <input
+              type="number"
+              min={MIN_CUSTOM_HOURS}
+              step="0.25"
+              value={customHours}
+              onChange={(e) => setCustomHours(e.target.value)}
+              disabled={running}
+            />
+          </div>
+        )}
+        <label className="checkbox-row">
+          <input type="checkbox" checked={postFirstNow} onChange={(e) => setPostFirstNow(e.target.checked)} disabled={running} />
+          Post the first one right away, then space out the rest
+        </label>
+        <p className="field-hint" style={{ marginTop: 10 }}>
+          {topics.length > 0
+            ? `${totalPosts} post${totalPosts === 1 ? '' : 's'} will be written and queued.`
+            : 'Add a topic to see how many posts this creates.'}{' '}
+          Scheduled posts publish straight from Facebook's own servers — they go out on time even if you close
+          this tab.
+        </p>
+      </div>
+
+      <button
+        className="btn btn-accent btn-block"
+        disabled={running || topics.length === 0 || !fb}
+        onClick={runAutopilot}
+      >
+        {running ? 'Generating & scheduling…' : `Generate & schedule ${totalPosts || ''} post${totalPosts === 1 ? '' : 's'}`}
+      </button>
+      {!fb && <p className="field-error" style={{ marginTop: 8 }}>Connect a Facebook Page first, in Connect profile.</p>}
+      {error && <div className="field-error" style={{ marginTop: 10 }}>{error}</div>}
+
+      {queue.length > 0 && (
+        <div className="ai-block" style={{ marginTop: 22, borderTop: '1px dashed var(--line)', paddingTop: 20 }}>
+          <label className="field-label-standalone">Queue</label>
+          <div className="post-list">
+            {queue.map((q) => {
+              let label = 'Waiting…';
+              let cls = 'idle';
+              if (q.state === 'writing') { label = 'Writing caption…'; cls = 'warn'; }
+              else if (q.state === 'image') { label = 'Generating image…'; cls = 'warn'; }
+              else if (q.state === 'scheduling') { label = 'Scheduling…'; cls = 'warn'; }
+              else if (q.state === 'posted') { label = 'Posted ✓'; cls = 'live'; }
+              else if (q.state === 'scheduled') { label = `Scheduled · ${new Date(q.scheduledFor).toLocaleString()}`; cls = 'ok'; }
+              else if (q.state === 'failed') { label = 'Failed'; cls = 'warn'; }
+
+              return (
+                <div key={q.id} className="card post-row">
+                  {q.imageUrl ? (
+                    <img src={q.imageUrl} alt="" className="post-row-thumb" />
+                  ) : (
+                    <div className="post-row-thumb sheet-row-thumb-empty" />
+                  )}
+                  <div className="post-row-text">
+                    <strong style={{ marginRight: 6 }}>{q.topic}</strong>
+                    {q.caption ? q.caption.split('\n')[0] : <span className="field-hint">…</span>}
+                  </div>
+                  <span className={`badge badge-${cls}`}>{label}</span>
+                </div>
+              );
+            })}
+          </div>
+          {queue.some((q) => q.state === 'failed' && q.message) && (
+            <div className="field-error" style={{ marginTop: 10 }}>
+              {queue.find((q) => q.state === 'failed' && q.message)?.message}
+            </div>
+          )}
+          {finished && (
+            <p className="field-hint" style={{ marginTop: 14 }}>
+              Done — check the <Link to="/log">broadcast log</Link> for full status, or run Auto-pilot again any
+              time to top up the queue.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
