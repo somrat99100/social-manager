@@ -530,3 +530,16 @@ p { margin: 0; }
   margin-top: 12px; padding: 0;
 }
 .guide-list { margin: 10px 0 0; padding-left: 18px; font-size: 13px; color: var(--ink-soft); line-height: 1.7; }
+.guide-panel {
+  margin-top: 10px; padding: 14px 16px; background: var(--paper); border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+}
+.guide-panel .field-hint { font-size: 12.5px; line-height: 1.6; margin: 8px 0 0; }
+.guide-panel .field-hint:first-child { margin-top: 0; }
+.guide-panel strong { color: var(--ink); font-weight: 600; }
+.guide-tabs { display: flex; gap: 8px; margin-bottom: 4px; }
+.guide-tab-btn {
+  flex: 1; font-size: 12px; font-weight: 600; padding: 7px 10px; border-radius: var(--radius-s);
+  border: 1px solid var(--line); background: var(--surface); color: var(--ink-soft); cursor: pointer;
+}
+.guide-tab-btn-active { border-color: var(--accent); background: var(--accent-soft); color: var(--ink); }
