@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
 import { publishToPage, schedulePost } from '../services/facebook';
 import { savePost, watchPosts } from '../services/content';
-import { parseSheetInput, fetchSheetRows } from '../services/sheets';
+import { parseSheetInput, fetchSheetRows, resolveRowImages } from '../services/sheets';
 import SheetRowModal from '../components/sheet-row-modal';
 import TallyDot from '../components/tally-dot';
 
@@ -98,7 +98,25 @@ export default function SheetImport() {
       if (fetched.length === 0) {
         setFetchError('No rows found. Make sure the sheet has a header row and at least one row of data below it.');
       }
-      setRows(fetched.map((r) => ({ ...r, included: true })));
+      const driveApiKey = profile?.driveApiKey || '';
+      // Resolve each row's image cell in parallel: a direct link stays as-is,
+      // a single Drive file link becomes a direct-view URL, and a Drive
+      // folder link gets expanded into every image inside it.
+      const withImages = await Promise.all(
+        fetched.map(async (r) => {
+          const { images, folder, error } = await resolveRowImages(r.imageUrl, driveApiKey);
+          return {
+            ...r,
+            included: true,
+            images,
+            imageUrl: images[0] || '', // first image, kept for the row thumbnail / single-image posts
+            imageCount: images.length,
+            driveFolder: folder,
+            imageError: error,
+          };
+        })
+      );
+      setRows(withImages);
       setSheetId(parsed.sheetId);
       if (user) {
         updateProfile({
@@ -142,6 +160,11 @@ export default function SheetImport() {
       const key = rowKey(sheetId, row.rowNumber, targetCycle);
       setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posting' } }));
 
+      if (row.driveFolder && row.imageError) {
+        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: row.imageError } }));
+        continue;
+      }
+
       const isImmediate = postFirstNow && i === 0;
       try {
         if (isImmediate) {
@@ -149,11 +172,12 @@ export default function SheetImport() {
             pageId: fb.pageId,
             pageAccessToken: fb.pageAccessToken,
             message: row.caption,
-            imageUrl: row.imageUrl || undefined,
+            imageUrls: row.images && row.images.length > 0 ? row.images : undefined,
           });
           await savePost(user.uid, {
             caption: row.caption,
             imageUrl: row.imageUrl || null,
+            imageUrls: row.images || [],
             status: 'posted',
             fbPostId: res.id,
             fbPageId: fb.pageId,
@@ -179,11 +203,12 @@ export default function SheetImport() {
             pageAccessToken: fb.pageAccessToken,
             message: row.caption,
             publishTimeUnix: publishAt,
-            imageUrl: row.imageUrl || undefined,
+            imageUrls: row.images && row.images.length > 0 ? row.images : undefined,
           });
           await savePost(user.uid, {
             caption: row.caption,
             imageUrl: row.imageUrl || null,
+            imageUrls: row.images || [],
             status: 'scheduled',
             fbPostId: res.id,
             fbPageId: fb.pageId,
@@ -266,7 +291,10 @@ export default function SheetImport() {
         <p className="field-hint" style={{ margin: '6px 0 14px' }}>
           Share the sheet as <strong>Anyone with the link — Viewer</strong>, then paste its link below. Put a
           header row on top with columns like <strong>Caption</strong> and <strong>Image Link</strong> — if no
-          headers match, column A is used as the caption and column B as the image link.
+          headers match, column A is used as the caption and column B as the image link. The image link can be a
+          direct image URL, a Google Drive file link, or a Drive <strong>folder</strong> link (every image inside
+          it becomes one multi-photo post — needs a Drive API key in Connect profile). Wrap words in{' '}
+          <strong>**double asterisks**</strong> to make them bold.
         </p>
 
         <div className="field">
@@ -346,10 +374,14 @@ export default function SheetImport() {
                 let statusLabel = 'Ready';
                 let statusClass = 'ok';
                 if (isDup) { statusLabel = 'Already queued'; statusClass = 'idle'; }
-                else if (!row.caption && !row.imageUrl) { statusLabel = 'Empty row'; statusClass = 'warn'; }
+                else if (row.driveFolder && row.imageError) { statusLabel = 'Drive folder error'; statusClass = 'warn'; }
+                else if (!row.caption && row.imageCount === 0) { statusLabel = 'Empty row'; statusClass = 'warn'; }
                 else if (!row.caption) { statusLabel = 'No caption'; statusClass = 'warn'; }
-                else if (!row.imageUrl) { statusLabel = 'Text only'; statusClass = 'idle'; }
-                else if (row.included && isImmediateSlot) { statusLabel = 'Ready · posts immediately'; }
+                else if (row.imageCount === 0) { statusLabel = 'Text only'; statusClass = 'idle'; }
+                else {
+                  const imgSuffix = row.imageCount > 1 ? ` · ${row.imageCount} images` : '';
+                  statusLabel = row.included && isImmediateSlot ? `Ready · posts immediately${imgSuffix}` : `Ready${imgSuffix}`;
+                }
 
                 if (log?.state === 'posting') { statusLabel = 'Posting…'; statusClass = 'warn'; }
                 else if (log?.state === 'posted') { statusLabel = 'Posted ✓'; statusClass = 'live'; }
@@ -369,11 +401,17 @@ export default function SheetImport() {
                       onChange={() => toggleRow(row.rowNumber)}
                     />
                     {row.imageUrl ? (
-                      <img src={row.imageUrl} alt="" className="post-row-thumb" onError={(e) => (e.currentTarget.style.visibility = 'hidden')} />
+                      <div className="post-row-thumb-wrap">
+                        <img src={row.imageUrl} alt="" className="post-row-thumb" onError={(e) => (e.currentTarget.style.visibility = 'hidden')} />
+                        {row.imageCount > 1 && <span className="post-row-thumb-count">{row.imageCount}</span>}
+                      </div>
                     ) : (
                       <div className="post-row-thumb sheet-row-thumb-empty" />
                     )}
                     <div className="post-row-text">{row.caption || <span className="field-hint">(no caption)</span>}</div>
+                    {row.imageError && !log?.message && (
+                      <div className="field-hint" style={{ color: 'var(--warn)' }}>{row.imageError}</div>
+                    )}
                     {log?.message && <div className="field-hint" style={{ color: 'var(--warn)' }}>{log.message}</div>}
                     <span className={`badge badge-${statusClass}`}>{statusLabel}</span>
                   </div>

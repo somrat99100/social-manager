@@ -20,6 +20,11 @@ export default function Settings() {
   const [showGeminiGuide, setShowGeminiGuide] = useState(false);
   const [hasFbApp, setHasFbApp] = useState(false);
 
+  const [driveKey, setDriveKey] = useState(profile?.driveApiKey || '');
+  const [driveSaved, setDriveSaved] = useState(false);
+  const [driveError, setDriveError] = useState('');
+  const [showDriveGuide, setShowDriveGuide] = useState(false);
+
   const findPages = async () => {
     if (!userToken.trim()) return;
     setFbError('');
@@ -75,6 +80,18 @@ export default function Settings() {
     } catch (e) {
       console.error('Failed to save Gemini key:', e);
       setGeminiError('Could not save the key. Please try again.');
+    }
+  };
+
+  const saveDriveKey = async () => {
+    setDriveError('');
+    try {
+      await updateProfile({ driveApiKey: driveKey.trim() });
+      setDriveSaved(true);
+      setTimeout(() => setDriveSaved(false), 2000);
+    } catch (e) {
+      console.error('Failed to save Drive API key:', e);
+      setDriveError('Could not save the key. Please try again.');
     }
   };
 
@@ -370,6 +387,72 @@ export default function Settings() {
               <strong>If a key stops working:</strong> Google now blocks old, unused, unrestricted keys
               after a period of inactivity (shown as "Blocked" in AI Studio). If that happens, just
               create a new key with the same steps above and paste it in — free and instant.
+            </p>
+          </div>
+        )}
+      </div>
+
+      <div className="card page-card">
+        <div className="settings-block-head">
+          <h3>Google Drive API key</h3>
+          <TallyDot status={profile?.driveApiKey ? 'live' : 'idle'} />
+        </div>
+        <p className="field-hint" style={{ margin: '6px 0 14px' }}>
+          Optional — only needed if a sheet's Image Link column ever points at a Drive{' '}
+          <strong>folder</strong> instead of a single image, so Social Manager can list every image
+          inside it and post them together. A single Drive file link works automatically without this.
+        </p>
+        <div className="field">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <input
+              type="password"
+              value={driveKey}
+              onChange={(e) => setDriveKey(e.target.value)}
+              placeholder="Paste your Google Drive API key"
+            />
+            <button className="btn btn-primary" onClick={saveDriveKey} disabled={!driveKey.trim()}>
+              {driveSaved ? 'Saved ✓' : 'Save'}
+            </button>
+          </div>
+          {driveError && <div className="field-error">{driveError}</div>}
+        </div>
+        <button className="link-toggle" onClick={() => setShowDriveGuide((v) => !v)}>
+          {showDriveGuide ? 'Hide guide' : 'How do I get a key?'}
+        </button>
+        {showDriveGuide && (
+          <div className="guide-panel">
+            <p className="field-hint" style={{ margin: '2px 0 10px', fontWeight: 600 }}>
+              Takes about 2 minutes, free — no billing required for this usage level.
+            </p>
+            <ol className="guide-list">
+              <li>
+                Go to <strong>console.cloud.google.com</strong> and sign in. Pick an existing project
+                from the top bar (the same one your Gemini key lives in is fine) or create a new one.
+              </li>
+              <li>
+                In the search bar at the top, search for <strong>Google Drive API</strong>, open it,
+                and click <strong>Enable</strong>.
+              </li>
+              <li>
+                Go to <strong>APIs & Services → Credentials</strong>, click{' '}
+                <strong>+ Create Credentials → API key</strong>. A key appears immediately.
+              </li>
+              <li>
+                Click <strong>Edit API key</strong> (or find it in the credentials list and click it)
+                and, under <strong>API restrictions</strong>, choose <strong>Restrict key</strong> and
+                check only <strong>Google Drive API</strong>. This keeps the key from being usable for
+                anything else if it ever leaks. Save.
+              </li>
+              <li>Copy the key and paste it into the box above, then click <strong>Save</strong>.</li>
+            </ol>
+            <p className="field-hint" style={{ marginTop: 10 }}>
+              <strong>The folder still needs to be public:</strong> in Drive, right-click the folder →{' '}
+              <strong>Share</strong> → <strong>General access</strong> → <strong>Anyone with the
+              link</strong> → <strong>Viewer</strong>. Same requirement as the sheet itself.
+            </p>
+            <p className="field-hint">
+              <strong>"Drive API key was rejected":</strong> almost always means the Google Drive API
+              hasn't been enabled for the project the key belongs to — go back to step 2.
             </p>
           </div>
         )}

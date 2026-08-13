@@ -1,9 +1,10 @@
 import { useState } from 'react';
+import CaptionField from './caption-field';
 
 /** Shows how one sheet row will look as a Facebook post, with the caption editable before approval. */
 export default function SheetRowModal({ row, page, onClose, onSave }) {
   const [caption, setCaption] = useState(row.caption);
-  const [imgError, setImgError] = useState(false);
+  const images = row.images && row.images.length > 0 ? row.images : row.imageUrl ? [row.imageUrl] : [];
 
   return (
     <div className="modal-scrim" onClick={onClose}>
@@ -26,16 +27,21 @@ export default function SheetRowModal({ row, page, onClose, onSave }) {
             </div>
           </div>
           <div className="fb-preview-caption">{caption || <span className="field-hint">No caption in this row</span>}</div>
-          {row.imageUrl && !imgError && (
-            <div className="fb-preview-image-wrap">
-              <img src={row.imageUrl} alt="Post visual" className="fb-preview-image" onError={() => setImgError(true)} />
-            </div>
-          )}
-          {row.imageUrl && imgError && (
+
+          {images.length === 1 && <ImageWithFallback src={images[0]} />}
+          {images.length > 1 && <MultiImageGrid images={images} />}
+
+          {row.driveFolder && row.imageError && (
             <div className="field-error" style={{ marginBottom: 10 }}>
-              Couldn't load this image link. It may not be a direct, publicly viewable image URL.
+              {row.imageError}
             </div>
           )}
+          {row.driveFolder && !row.imageError && images.length > 0 && (
+            <div className="field-hint" style={{ marginBottom: 10 }}>
+              From a Drive folder — {images.length} image{images.length === 1 ? '' : 's'} will post together.
+            </div>
+          )}
+
           <div className="fb-preview-actions">
             <span>👍 Like</span>
             <span>💬 Comment</span>
@@ -43,9 +49,8 @@ export default function SheetRowModal({ row, page, onClose, onSave }) {
           </div>
         </div>
 
-        <div className="field" style={{ marginTop: 14 }}>
-          <label>Caption (edit before approving)</label>
-          <textarea rows={4} value={caption} onChange={(e) => setCaption(e.target.value)} />
+        <div style={{ marginTop: 14 }}>
+          <CaptionField label="Caption (edit before approving)" value={caption} onChange={setCaption} rows={4} />
         </div>
 
         <div className="modal-footer">
@@ -61,6 +66,45 @@ export default function SheetRowModal({ row, page, onClose, onSave }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ImageWithFallback({ src }) {
+  const [imgError, setImgError] = useState(false);
+  if (imgError) {
+    return (
+      <div className="field-error" style={{ marginBottom: 10 }}>
+        Couldn't load this image link. It may not be a direct, publicly viewable image URL.
+      </div>
+    );
+  }
+  return (
+    <div className="fb-preview-image-wrap">
+      <img src={src} alt="Post visual" className="fb-preview-image" onError={() => setImgError(true)} />
+    </div>
+  );
+}
+
+function MultiImageGrid({ images }) {
+  const shown = images.slice(0, 4);
+  const extra = images.length - shown.length;
+  return (
+    <div className={`fb-preview-image-grid fb-preview-image-grid-${shown.length}`}>
+      {shown.map((src, i) => (
+        <div key={src + i} className="fb-preview-image-grid-cell">
+          <img
+            src={src}
+            alt=""
+            onError={(e) => {
+              e.currentTarget.style.visibility = 'hidden';
+            }}
+          />
+          {i === shown.length - 1 && extra > 0 && (
+            <div className="fb-preview-image-grid-more">+{extra}</div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

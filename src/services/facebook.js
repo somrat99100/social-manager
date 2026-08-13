@@ -1,6 +1,24 @@
 const GRAPH = 'https://graph.facebook.com/v20.0';
 
 /**
+ * Uploads one image to the Page's photo library without publishing it as
+ * its own post. Returns the photo's ID, which gets attached to a /feed
+ * post afterwards — this is how Facebook builds a single post containing
+ * several images (a "multi-photo" post).
+ */
+async function uploadUnpublishedPhoto(pageId, pageAccessToken, imageUrl) {
+  const form = new FormData();
+  form.append('url', imageUrl);
+  form.append('published', 'false');
+  form.append('access_token', pageAccessToken);
+  const res = await fetch(`${GRAPH}/${pageId}/photos`, { method: 'POST', body: form });
+  const data = await res.json();
+  if (data.error) throw new Error(`Image upload failed (${imageUrl.slice(0, 60)}…): ${data.error.message}`);
+  return data.id;
+}
+
+
+/**
  * Given a User Access Token (with pages_show_list, pages_manage_posts,
  * pages_read_engagement permissions), fetch the list of Pages the user manages.
  * Each returned page already carries its own Page Access Token, which is what
@@ -44,14 +62,45 @@ export async function fetchPageInfo(pageId, pageAccessToken) {
  * so nothing needs to be downloaded into the browser first (handy for images
  * that come from a Google Sheet).
  */
-export async function publishToPage({ pageId, pageAccessToken, message, imageBase64, imageUrl }) {
-  if (imageBase64 || imageUrl) {
+/**
+ * Publish a post to a Page. Text-only posts go to /feed; a post with one
+ * image goes to /photos so it renders inline like a normal Facebook photo
+ * post; a post with several images (pass `imageUrls`) uploads each one
+ * unpublished first, then attaches them all to a single /feed post — the
+ * same multi-photo layout you get posting several images by hand.
+ * `imageBase64` should be a raw base64 string (no data: prefix). `imageUrl`/
+ * `imageUrls` are direct links to publicly hosted images — Facebook fetches
+ * them server-side, so nothing needs to be downloaded into the browser first.
+ */
+export async function publishToPage({ pageId, pageAccessToken, message, imageBase64, imageUrl, imageUrls }) {
+  const urls = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
+
+  if (urls.length > 1) {
+    const photoIds = [];
+    for (const u of urls) {
+      photoIds.push(await uploadUnpublishedPhoto(pageId, pageAccessToken, u));
+    }
+    const res = await fetch(`${GRAPH}/${pageId}/feed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        attached_media: photoIds.map((id) => ({ media_fbid: id })),
+        access_token: pageAccessToken,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return { id: data.id };
+  }
+
+  if (imageBase64 || urls[0]) {
     const form = new FormData();
     if (imageBase64) {
       const blob = base64ToBlob(imageBase64, 'image/png');
       form.append('source', blob, 'post-image.png');
     } else {
-      form.append('url', imageUrl);
+      form.append('url', urls[0]);
     }
     form.append('caption', message || '');
     form.append('access_token', pageAccessToken);
@@ -74,12 +123,36 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
  * Schedule a post for the future (Facebook requires 10 min - 75 days out).
  * This is handled entirely on Facebook's side once submitted — the post goes
  * out at `publishTimeUnix` even if this browser tab is closed. Pass `imageUrl`
- * for a photo post scheduled from a direct image link.
+ * for a single-photo post, or `imageUrls` (2+) for a multi-photo post —
+ * scheduling works the same way for both, just with more photos attached.
  */
-export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl }) {
-  if (imageUrl) {
+export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl, imageUrls }) {
+  const urls = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
+
+  if (urls.length > 1) {
+    const photoIds = [];
+    for (const u of urls) {
+      photoIds.push(await uploadUnpublishedPhoto(pageId, pageAccessToken, u));
+    }
+    const res = await fetch(`${GRAPH}/${pageId}/feed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        attached_media: photoIds.map((id) => ({ media_fbid: id })),
+        published: false,
+        scheduled_publish_time: publishTimeUnix,
+        access_token: pageAccessToken,
+      }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return { id: data.id };
+  }
+
+  if (urls[0]) {
     const form = new FormData();
-    form.append('url', imageUrl);
+    form.append('url', urls[0]);
     form.append('caption', message || '');
     form.append('published', 'false');
     form.append('scheduled_publish_time', String(publishTimeUnix));

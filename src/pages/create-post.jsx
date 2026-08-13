@@ -5,6 +5,7 @@ import { publishToPage } from '../services/facebook';
 import { suggestContentIdeas, generateCaptions, generateImage } from '../services/gemini';
 import { savePost, watchSavedTexts, saveText, deleteSavedText } from '../services/content';
 import PostPreviewModal from '../components/post-preview-modal';
+import CaptionField from '../components/caption-field';
 
 export default function CreatePost() {
   const { user, profile } = useAuth();
@@ -240,10 +241,7 @@ export default function CreatePost() {
 function ManualComposer({ caption, setCaption, imageDataUrl, onFileChange, fileRef, onClearImage }) {
   return (
     <div className="card page-card">
-      <div className="field">
-        <label>What's on your mind?</label>
-        <textarea rows={6} value={caption} onChange={(e) => setCaption(e.target.value)} placeholder="Write your post…" />
-      </div>
+      <CaptionField label="What's on your mind?" value={caption} onChange={setCaption} rows={6} placeholder="Write your post…" />
       <div className="field">
         <label>Photo</label>
         {imageDataUrl ? (
@@ -414,7 +412,7 @@ function AiComposer({ geminiKey, caption, setCaption, imageDataUrl, setImageData
 
       <div className="field">
         <label>Final caption (edit freely)</label>
-        <textarea rows={4} value={caption} onChange={(e) => setCaption(e.target.value)} />
+        <CaptionField value={caption} onChange={setCaption} rows={4} />
       </div>
 
       {error && <div className="field-error">{error}</div>}

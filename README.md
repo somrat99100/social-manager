@@ -17,7 +17,9 @@ images — all on free tiers. Preview before you publish, and post now or save a
 - **Post from Google Sheet** — connect a public sheet (`Caption` + `Image Link` columns), fetch its rows into a
   numbered, click-to-preview queue, pick a posting interval (30 min up to custom hours), and approve the batch.
   The first post can go out immediately; every post after that is scheduled directly on Facebook's own servers
-  at `now + n × interval`, so they publish on time even if you close the browser. See "Post from Google Sheet"
+  at `now + n × interval`, so they publish on time even if you close the browser. Image links can be direct
+  URLs, single Google Drive files, or Drive folders (posted as one multi-photo post). Captions support
+  **bold** text via a toolbar button or `**double asterisks**` in the sheet. See "Post from Google Sheet"
   below for the sheet-sharing requirement.
 - **Broadcast log** — every draft and posted item, with "continue editing" for drafts
 - **Settings** — manage your Facebook connection and Gemini API key, with built-in guides for getting both
@@ -94,6 +96,25 @@ using Google's public CSV export, so it only works with sheets shared as **Anyon
    "Loop 2", "Loop 3", etc. next to the row count). This is a manual step by design — nothing loops on its own
    in the background, since this is a client-only app with no server process to trigger it while the tab is
    closed.
+
+### Bold text in captions
+Facebook has no rich-text formatting in posts — bold is faked the way most scheduling tools do it, by
+swapping letters for their Unicode "mathematical bold" twins, which render bold everywhere as plain text.
+Two ways to use it:
+- **In the sheet itself:** wrap a word or phrase in `**double asterisks**` in the Caption column — it's
+  converted to bold automatically the moment the sheet is fetched, and shows bold in the row preview.
+- **While editing a caption** (row preview modal, or the manual/AI composer): select some text and click the
+  **B** button above the textarea (or press Ctrl/Cmd+B). Click it again on the same selection to undo.
+
+### Image links: direct URLs, Drive files, and Drive folders
+The Image Link column now accepts three kinds of links:
+- A **direct image URL** (ending in `.jpg`/`.png`/etc.) — used exactly as before.
+- A **single Google Drive file link** (any of Drive's share-link formats) — converted to a direct-view link
+  automatically, no setup needed. The file just needs to be shared as "Anyone with the link — Viewer".
+- A **Google Drive folder link** — every image directly inside the folder becomes one multi-photo Facebook
+  post (the same layout you get posting several photos by hand). This needs a **Google Drive API key**,
+  added once in **Connect profile** (guide included there, ~2 minutes, free). The folder itself still needs
+  to be shared as "Anyone with the link — Viewer".
 
 ## Run it
 

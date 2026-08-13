@@ -54,7 +54,12 @@ export default function Log() {
             <div key={p.id} className="card post-row post-row-lg">
               <TallyDot status={p.status === 'posted' ? 'live' : p.status === 'scheduled' ? 'ok' : 'warn'} />
               {(p.imageDataUrl || p.imageUrl) && (
-                <img src={p.imageDataUrl || p.imageUrl} alt="" className="post-row-thumb" />
+                <div className="post-row-thumb-wrap">
+                  <img src={p.imageDataUrl || p.imageUrl} alt="" className="post-row-thumb" />
+                  {p.imageUrls && p.imageUrls.length > 1 && (
+                    <span className="post-row-thumb-count">{p.imageUrls.length}</span>
+                  )}
+                </div>
               )}
               <div className="post-row-text">
                 {p.caption || '(no caption)'}
