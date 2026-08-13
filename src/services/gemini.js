@@ -43,7 +43,14 @@ function diagnoseGeminiError(error, status) {
     return 'This Gemini API key does not have access to that model. Make sure your key is enabled at aistudio.google.com.';
   }
   if (status === 429 || m.includes('quota') || m.includes('resource_exhausted') || m.includes('rate limit')) {
-    return "You've hit Gemini's free-tier rate limit. Wait a minute and try again — the free daily quota resets at midnight Pacific time.";
+    // Google sometimes returns a hard `limit: 0` for image generation on
+    // Free-tier projects (not a real "you used it up" rate limit) — that
+    // needs billing linked to the project, not a wait-and-retry.
+    const isZeroQuota = /limit:\s*0\b/i.test(msg) || /free_tier/i.test(msg);
+    if (isZeroQuota) {
+      return "This Google Cloud project's free tier has zero image-generation quota (Google gates this per-project, separate from your usage). Fix: link a billing account to the project behind this API key at console.cloud.google.com/billing — it's free to link and image generation itself costs a fraction of a cent per image, but the 0-quota block won't lift until billing is linked.";
+    }
+    return "You've hit Gemini's rate limit for this key. Wait a minute and try again — daily quotas reset at midnight Pacific time.";
   }
   if (status === 503 || m.includes('unavailable') || m.includes('overloaded')) {
     return "Gemini's servers are overloaded right now. Try again in a few seconds.";

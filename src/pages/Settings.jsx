@@ -325,7 +325,8 @@ export default function Settings() {
           <TallyDot status={profile?.geminiApiKey ? 'live' : 'idle'} />
         </div>
         <p className="field-hint" style={{ margin: '6px 0 14px' }}>
-          Powers the AI agent — content ideas, captions, and image generation, all on Google's free tier.
+          Powers the AI agent's content ideas and captions. Image generation uses this too when it can, and
+          automatically falls back to a free, no-key image provider if Gemini's image quota isn't available.
         </p>
         <div className="field">
           <div style={{ display: 'flex', gap: 8 }}>

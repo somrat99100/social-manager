@@ -5,12 +5,12 @@ import { publishToPage, schedulePost } from '../services/facebook';
 import {
   suggestContentIdeas,
   generateCaptions,
-  generateImage,
   generateAutoPost,
   suggestImagePrompt,
   TONE_OPTIONS,
   IMAGE_ASPECT_OPTIONS,
 } from '../services/gemini';
+import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imageProviders';
 import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText } from '../services/content';
 import PostPreviewModal from '../components/post-preview-modal';
@@ -384,6 +384,8 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
 
   const [imagePrompt, setImagePrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
+  const [imageProvider, setImageProvider] = useState('auto');
+  const [imageProviderUsed, setImageProviderUsed] = useState(null);
   const [loadingImage, setLoadingImage] = useState(false);
   const [suggestingPrompt, setSuggestingPrompt] = useState(false);
   const [error, setError] = useState('');
@@ -441,9 +443,14 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
     setError('');
     setLoadingImage(true);
     try {
-      const { base64, mimeType } = await generateImage(imagePrompt, geminiKey, { aspectRatio });
+      const { base64, mimeType, provider, fallbackFrom } = await generateImageSmart(imagePrompt, {
+        provider: imageProvider,
+        geminiKey,
+        aspectRatio,
+      });
       setImageBase64(base64);
       setImageDataUrl(`data:${mimeType};base64,${base64}`);
+      setImageProviderUsed({ provider, fallbackFrom });
     } catch (e) {
       setError(e.message);
     } finally {
@@ -542,6 +549,11 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
             </button>
           </div>
           <div className="image-gen-row">
+            <select value={imageProvider} onChange={(e) => setImageProvider(e.target.value)} title="Image AI provider">
+              {IMAGE_PROVIDER_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
             <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} title="Image shape">
               {IMAGE_ASPECT_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -560,11 +572,21 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
               onClick={() => {
                 setImageDataUrl(null);
                 setImageBase64(null);
+                setImageProviderUsed(null);
               }}
             >
               Remove
             </button>
           </div>
+        )}
+        {imageProviderUsed && (
+          <p className="field-hint" style={{ marginTop: 6 }}>
+            {imageProviderUsed.provider === 'free'
+              ? imageProviderUsed.fallbackFrom
+                ? `Generated with the free provider — Gemini couldn't (${imageProviderUsed.fallbackFrom}).`
+                : 'Generated with the free provider (no API key needed).'
+              : 'Generated with Gemini.'}
+          </p>
         )}
       </div>
 
@@ -590,6 +612,7 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
   const [emojiLevel, setEmojiLevel] = useState(saved.emojiLevel || 'tasteful');
   const [includeImages, setIncludeImages] = useState(saved.includeImages !== false);
   const [imageAspectRatio, setImageAspectRatio] = useState(saved.imageAspectRatio || '1:1');
+  const [imageProvider, setImageProvider] = useState(saved.imageProvider || 'auto');
   const [postsPerTopic, setPostsPerTopic] = useState(saved.postsPerTopic || 3);
 
   const [intervalPreset, setIntervalPreset] = useState(
@@ -645,6 +668,7 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
           emojiLevel,
           includeImages,
           imageAspectRatio,
+          imageProvider,
           postsPerTopic,
           intervalHours,
           postFirstNow,
@@ -679,7 +703,11 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
         let imageUrl = null;
         if (includeImages && post.imagePrompt) {
           setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'image', caption: post.caption, angle: post.angle } : q)));
-          const { base64, mimeType } = await generateImage(post.imagePrompt, geminiKey, { aspectRatio: imageAspectRatio });
+          const { base64, mimeType } = await generateImageSmart(post.imagePrompt, {
+            provider: imageProvider,
+            geminiKey,
+            aspectRatio: imageAspectRatio,
+          });
           imageUrl = await uploadGeneratedImage(user.uid, base64, mimeType);
         }
 
@@ -802,16 +830,28 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
             Generate a matching AI image for every post
           </label>
           {includeImages && (
-            <select
-              value={imageAspectRatio}
-              onChange={(e) => setImageAspectRatio(e.target.value)}
-              disabled={running}
-              title="Image shape"
-            >
-              {IMAGE_ASPECT_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
+            <>
+              <select
+                value={imageProvider}
+                onChange={(e) => setImageProvider(e.target.value)}
+                disabled={running}
+                title="Image AI provider"
+              >
+                {IMAGE_PROVIDER_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <select
+                value={imageAspectRatio}
+                onChange={(e) => setImageAspectRatio(e.target.value)}
+                disabled={running}
+                title="Image shape"
+              >
+                {IMAGE_ASPECT_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </>
           )}
         </div>
       </div>
