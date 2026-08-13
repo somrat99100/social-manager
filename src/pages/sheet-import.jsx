@@ -85,23 +85,18 @@ export default function SheetImport() {
 
   const doFetch = async () => {
     setFetchError('');
-    setRunLog({});
     const parsed = parseSheetInput(sheetInput);
     if (!parsed) {
       setFetchError("That doesn't look like a Google Sheet link or ID. Paste the full URL from your browser's address bar.");
       return;
     }
     setFetching(true);
-    setRows([]);
     try {
       const fetched = await fetchSheetRows({ sheetId: parsed.sheetId, gid: parsed.gid, sheetName });
       if (fetched.length === 0) {
         setFetchError('No rows found. Make sure the sheet has a header row and at least one row of data below it.');
       }
       const driveApiKey = profile?.driveApiKey || '';
-      // Resolve each row's image cell in parallel: a direct link stays as-is,
-      // a single Drive file link becomes a direct-view URL, and a Drive
-      // folder link gets expanded into every image inside it.
       const withImages = await Promise.all(
         fetched.map(async (r) => {
           const { images, folder, error } = await resolveRowImages(r.imageUrl, driveApiKey);
@@ -109,14 +104,30 @@ export default function SheetImport() {
             ...r,
             included: true,
             images,
-            imageUrl: images[0] || '', // first image, kept for the row thumbnail / single-image posts
+            imageUrl: images[0] || '',
             imageCount: images.length,
             driveFolder: folder,
             imageError: error,
           };
         })
       );
-      setRows(withImages);
+      // Update #4 — merge into the existing queue instead of replacing it:
+      // rows already sitting in the queue (and not yet posted) keep their
+      // position, any local edits, and their run-log entry; only genuinely
+      // new rows (by rowNumber) get appended at the end. Rows the person has
+      // already deleted from the queue stay deleted even if re-fetched.
+      setRows((prevRows) => {
+        const existingByNum = new Map(prevRows.map((r) => [r.rowNumber, r]));
+        const merged = prevRows.map((r) => {
+          const fresh = withImages.find((f) => f.rowNumber === r.rowNumber);
+          // Row still exists in the sheet — keep local state (included flag,
+          // any edited caption) but refresh image resolution in case the
+          // sheet's image link changed.
+          return fresh ? { ...r, images: fresh.images, imageUrl: fresh.imageUrl, imageCount: fresh.imageCount, driveFolder: fresh.driveFolder, imageError: fresh.imageError } : r;
+        });
+        const newOnes = withImages.filter((f) => !existingByNum.has(f.rowNumber));
+        return [...merged, ...newOnes];
+      });
       setSheetId(parsed.sheetId);
       if (user) {
         updateProfile({
@@ -139,6 +150,32 @@ export default function SheetImport() {
 
   const toggleRow = (rowNumber) => {
     setRows((prev) => prev.map((r) => (r.rowNumber === rowNumber ? { ...r, included: !r.included } : r)));
+  };
+
+  // Update #4 — permanently remove a row from the local queue. A deleted
+  // row is spliced out entirely, so a re-fetch of the sheet won't bring it
+  // back with a stale state, and it can never be scheduled/posted from here.
+  const deleteRow = (rowNumber) => {
+    setRows((prev) => prev.filter((r) => r.rowNumber !== rowNumber));
+    setRunLog((prev) => {
+      const next = { ...prev };
+      delete next[rowNumber];
+      return next;
+    });
+  };
+
+  // Update #4 — drag-to-reorder. Order here directly controls the schedule
+  // order (earlier in the list = earlier publish slot), so reordering
+  // before approving actually changes when each post goes out.
+  const [dragRowIndex, setDragRowIndex] = useState(null);
+  const [dragOverRowIndex, setDragOverRowIndex] = useState(null);
+  const reorderRows = (fromIndex, toIndex) => {
+    setRows((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
   };
 
   const updateCaption = (rowNumber, caption) => {
@@ -363,6 +400,10 @@ export default function SheetImport() {
               </h3>
               {cycle > 1 && <span className="badge badge-idle">Loop {cycle}</span>}
             </div>
+            <p className="field-hint" style={{ margin: '6px 0 4px' }}>
+              Drag ⋮⋮ to reorder (changes posting order) · uncheck to skip · ✕ to delete for good — a deleted row
+              never posts, even if you re-fetch the sheet.
+            </p>
 
             <div className="post-list" style={{ marginTop: 12 }}>
               {rows.map((row, i) => {
@@ -370,6 +411,7 @@ export default function SheetImport() {
                 const isDup = key && dupSet.has(key);
                 const log = runLog[row.rowNumber];
                 const isImmediateSlot = postFirstNow && includedRows[0]?.rowNumber === row.rowNumber;
+                const isBusy = log?.state === 'posting' || approving;
 
                 let statusLabel = 'Ready';
                 let statusClass = 'ok';
@@ -390,8 +432,37 @@ export default function SheetImport() {
                   statusClass = 'ok';
                 } else if (log?.state === 'failed') { statusLabel = 'Failed'; statusClass = 'warn'; }
 
+                const canDrag = !isBusy && !log; // once it's touched by a run, its position is locked
+
                 return (
-                  <div key={row.rowNumber} className="card sheet-row" onClick={() => setPreviewRow(row)}>
+                  <div
+                    key={row.rowNumber}
+                    className="card sheet-row"
+                    onClick={() => setPreviewRow(row)}
+                    draggable={canDrag}
+                    onDragStart={(e) => { e.stopPropagation(); setDragRowIndex(i); }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      if (!canDrag) return;
+                      setDragOverRowIndex(i);
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragOverRowIndex(null);
+                      if (dragRowIndex === null || dragRowIndex === i || !canDrag) { setDragRowIndex(null); return; }
+                      reorderRows(dragRowIndex, i);
+                      setDragRowIndex(null);
+                    }}
+                    onDragEnd={() => { setDragRowIndex(null); setDragOverRowIndex(null); }}
+                    style={{
+                      opacity: dragRowIndex === i ? 0.5 : 1,
+                      background: dragOverRowIndex === i ? 'var(--bg-2)' : undefined,
+                      cursor: canDrag ? 'grab' : undefined,
+                    }}
+                  >
+                    {canDrag && (
+                      <span style={{ opacity: 0.5, marginRight: 2 }} onClick={(e) => e.stopPropagation()}>⋮⋮</span>
+                    )}
                     <span className="sheet-row-num">{i + 1}</span>
                     <input
                       type="checkbox"
@@ -414,6 +485,16 @@ export default function SheetImport() {
                     )}
                     {log?.message && <div className="field-hint" style={{ color: 'var(--warn)' }}>{log.message}</div>}
                     <span className={`badge badge-${statusClass}`}>{statusLabel}</span>
+                    {canDrag && (
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={(e) => { e.stopPropagation(); deleteRow(row.rowNumber); }}
+                        aria-label={`Delete row ${row.rowNumber}`}
+                        title="Delete — this row will never be posted"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 );
               })}

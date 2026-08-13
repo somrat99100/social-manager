@@ -1,8 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
-import { watchPosts, deletePost } from '../services/content';
+import { watchPosts, deletePost, updatePostStatus } from '../services/content';
+import { checkPostStatus } from '../services/facebook';
 import TallyDot from '../components/tally-dot';
+
+const STATUS_CHECK_INTERVAL_MS = 60_000; // check every 60s, per Update #1
 
 const FILTERS = [
   { key: 'all', label: 'All' },
@@ -11,15 +14,48 @@ const FILTERS = [
 ];
 
 export default function Log() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const navigate = useNavigate();
   const [posts, setPosts] = useState([]);
   const [filter, setFilter] = useState('all');
+  const checkingRef = useRef(false);
 
   useEffect(() => {
     if (!user) return;
     return watchPosts(user.uid, setPosts);
   }, [user]);
+
+  // Update #1 — scheduled posts don't flip to "posted" on their own once
+  // Facebook actually publishes them; poll the Graph API periodically and
+  // update Firestore the moment a scheduled post goes live.
+  useEffect(() => {
+    if (!user) return;
+
+    const runCheck = async () => {
+      if (checkingRef.current) return;
+      const pages = profile?.pages || [];
+      const scheduled = posts.filter((p) => p.status === 'scheduled' && p.fbPostId && p.fbPageId);
+      if (scheduled.length === 0 || pages.length === 0) return;
+      checkingRef.current = true;
+      try {
+        for (const p of scheduled) {
+          const page = pages.find((pg) => pg.pageId === p.fbPageId);
+          if (!page?.pageAccessToken) continue;
+          const result = await checkPostStatus(p.fbPostId, page.pageAccessToken);
+          if (result === 'posted') {
+            await updatePostStatus(user.uid, p.id, 'posted');
+          }
+        }
+      } finally {
+        checkingRef.current = false;
+      }
+    };
+
+    runCheck();
+    const t = setInterval(runCheck, STATUS_CHECK_INTERVAL_MS);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, posts, profile]);
 
   const visible = filter === 'all' ? posts : posts.filter((p) => p.status === filter);
 

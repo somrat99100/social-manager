@@ -5,7 +5,8 @@ import { publishToPage, schedulePost } from '../services/facebook';
 import {
   suggestContentIdeas,
   generateCaptions,
-  generateAutoPost,
+  generateCaptionsFromTopic,
+  generateAutoPostFromTopic,
   suggestImagePrompt,
   TONE_OPTIONS,
   IMAGE_ASPECT_OPTIONS,
@@ -13,6 +14,7 @@ import {
 import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imageProviders';
 import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText } from '../services/content';
+import { applyMarkdownBold } from '../lib/text-format';
 import PostPreviewModal from '../components/post-preview-modal';
 import WebAiBridgeModal from '../components/web-ai-bridge-modal';
 import CaptionField from '../components/caption-field';
@@ -392,7 +394,35 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
   const [loadingImage, setLoadingImage] = useState(false);
   const [suggestingPrompt, setSuggestingPrompt] = useState(false);
   const [bridgeProvider, setBridgeProvider] = useState(null); // 'gemini' | 'chatgpt' | null
+  const [showBridgeOptions, setShowBridgeOptions] = useState(false); // Update #6 — collapsed by default
   const [error, setError] = useState('');
+
+  // Update #5 — the topic IS the prompt: generate a caption straight from it
+  // (no angle step needed), and offer a "polished" version with a few key
+  // words bolded, alongside the plain one.
+  const [topicResult, setTopicResult] = useState(null); // { plain, polished }
+  const [loadingTopicCaption, setLoadingTopicCaption] = useState(false);
+  const [captionVersion, setCaptionVersion] = useState('polished'); // 'plain' | 'polished'
+
+  const runGenerateFromTopic = async () => {
+    if (!topic.trim()) return;
+    setError('');
+    setLoadingTopicCaption(true);
+    setTopicResult(null);
+    setIdeas([]);
+    setSelectedAngle(null);
+    setCaptionOptions([]);
+    try {
+      const result = await generateCaptionsFromTopic(topic, geminiKey, { tone, includeHashtags, emojiLevel });
+      setTopicResult(result);
+      setCaptionVersion('polished');
+      setCaption(applyMarkdownBold(result.polished || result.plain));
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoadingTopicCaption(false);
+    }
+  };
 
   const runSuggest = async () => {
     if (!topic.trim()) return;
@@ -473,18 +503,29 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
     <>
       <div className="ai-block">
         <div className="field">
-          <label>1. What's the topic?</label>
+          <label>1. What's the topic? (this is your prompt)</label>
           <div style={{ display: 'flex', gap: 8 }}>
             <input
               value={topic}
               onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && runSuggest()}
-              placeholder="e.g. weekend cafe special"
+              onKeyDown={(e) => e.key === 'Enter' && runGenerateFromTopic()}
+              placeholder="e.g. weekend cafe special, or a full sentence describing the post"
             />
-            <button className="btn btn-primary" onClick={runSuggest} disabled={loadingIdeas || !topic.trim()}>
-              {loadingIdeas ? 'Thinking…' : 'Suggest ideas'}
+            <button
+              className="btn btn-accent"
+              onClick={runGenerateFromTopic}
+              disabled={loadingTopicCaption || !topic.trim()}
+              title="Write the caption straight from this topic"
+            >
+              {loadingTopicCaption ? 'Writing…' : '✨ Generate caption'}
             </button>
           </div>
+          <p className="field-hint" style={{ marginTop: 6 }}>
+            Type exactly what you want the post to be about — it's used as the actual writing prompt, not just a
+            keyword. Or, use <button type="button" className="link-toggle" style={{ display: 'inline', padding: 0 }} onClick={runSuggest} disabled={loadingIdeas || !topic.trim()}>
+              {loadingIdeas ? 'thinking…' : 'a few angle ideas'}
+            </button> first if you'd rather pick a specific hook.
+          </p>
         </div>
 
         <ToneControls
@@ -495,6 +536,39 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
           includeHashtags={includeHashtags}
           setIncludeHashtags={setIncludeHashtags}
         />
+
+        {topicResult && (
+          <div className="caption-options" style={{ marginTop: 12 }}>
+            <div className="guide-tabs ai-mode-tabs">
+              <button
+                className={`guide-tab-btn ${captionVersion === 'plain' ? 'guide-tab-btn-active' : ''}`}
+                onClick={() => {
+                  setCaptionVersion('plain');
+                  setCaption(topicResult.plain);
+                }}
+              >
+                Plain
+              </button>
+              <button
+                className={`guide-tab-btn ${captionVersion === 'polished' ? 'guide-tab-btn-active' : ''}`}
+                onClick={() => {
+                  setCaptionVersion('polished');
+                  setCaption(applyMarkdownBold(topicResult.polished || topicResult.plain));
+                }}
+              >
+                ✦ Polished (bold)
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={runGenerateFromTopic} disabled={loadingTopicCaption}>
+                🔁 Regenerate
+              </button>
+            </div>
+            <p className="field-hint" style={{ marginTop: 6 }}>
+              {captionVersion === 'polished'
+                ? 'A few key words are bolded with real Unicode bold characters, so they actually render bold on Facebook.'
+                : 'Plain version, no emphasis. Edit freely below either way.'}
+            </p>
+          </div>
+        )}
 
         {ideas.length > 0 && (
           <div className="idea-grid">
@@ -577,27 +651,36 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
         </div>
 
         <div className="field" style={{ marginTop: 10 }}>
-          <label>Or generate it yourself in Gemini / ChatGPT (free, higher quality)</label>
-          <p className="field-hint" style={{ marginTop: -4, marginBottom: 8 }}>
-            Docks the real web app in a window next to this one — they can't be embedded directly, but this keeps
-            you in the same flow: generate the image there, copy it, and bring it straight back here.
-          </p>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setBridgeProvider('gemini')}
-              disabled={!imagePrompt.trim()}
-            >
-              ✦ Open Gemini
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setBridgeProvider('chatgpt')}
-              disabled={!imagePrompt.trim()}
-            >
-              ⌘ Open ChatGPT
-            </button>
-          </div>
+          <button type="button" className="link-toggle" onClick={() => setShowBridgeOptions((v) => !v)}>
+            {showBridgeOptions ? 'Hide advanced option' : 'Advanced: bring in an image from Gemini / ChatGPT instead'}
+          </button>
+          {showBridgeOptions && (
+            <>
+              <p className="field-hint" style={{ marginTop: 6, marginBottom: 8 }}>
+                The Generate button above already creates images without ever leaving this page. This option is only
+                for when you specifically want Gemini's or ChatGPT's own web app quality — those sites block being
+                embedded directly (their own security setting, not something Social Manager can change), so they
+                open in a small docked window next to this one instead of a full new tab; you generate there, then
+                paste the image straight back in below.
+              </p>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setBridgeProvider('gemini')}
+                  disabled={!imagePrompt.trim()}
+                >
+                  ✦ Open Gemini
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setBridgeProvider('chatgpt')}
+                  disabled={!imagePrompt.trim()}
+                >
+                  ⌘ Open ChatGPT
+                </button>
+              </div>
+            </>
+          )}
         </div>
 
         {bridgeProvider && (
@@ -671,8 +754,13 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
   const [postFirstNow, setPostFirstNow] = useState(saved.postFirstNow !== false);
 
   const [running, setRunning] = useState(false);
+  // Update #4 — the queue is now a real, editable list: built up-front from
+  // topics (state 'pending'), reorderable by drag, deletable before it runs.
+  // Anything deleted here is spliced out and can never be posted.
   const [queue, setQueue] = useState([]);
   const [error, setError] = useState('');
+  const [dragIndex, setDragIndex] = useState(null);
+  const [dragOverIndex, setDragOverIndex] = useState(null);
 
   const totalPosts = topics.length * postsPerTopic;
 
@@ -693,12 +781,65 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
 
   const removeTopic = (t) => setTopics((prev) => prev.filter((x) => x !== t));
 
+  // Build (or top up) the queue from the current topic list, without
+  // disturbing any items already sitting in the queue (pending, running, or
+  // finished) — this is what lets "Generate & schedule" be run again later
+  // to add more posts on top of an existing queue instead of replacing it.
+  const buildQueueFromTopics = () => {
+    const slots = [];
+    for (let r = 0; r < postsPerTopic; r++) {
+      for (const t of topics) slots.push(t);
+    }
+    const additions = slots.map((t, i) => ({
+      id: `topic-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 7)}`,
+      topic: t,
+      caption: '',
+      imageUrl: null,
+      state: 'pending',
+      source: 'topic',
+    }));
+    setQueue((prev) => [...prev, ...additions]);
+    return additions;
+  };
+
+  const deleteFromQueue = (id) => {
+    // Only items that haven't started yet can be removed — once something
+    // is scheduled/posted it's already live and belongs to the broadcast log.
+    setQueue((prev) => prev.filter((q) => q.id !== id || !['pending'].includes(q.state)));
+  };
+
+  const handleDragStart = (id) => (e) => {
+    setDragIndex(queue.findIndex((q) => q.id === id));
+    e.dataTransfer.effectAllowed = 'move';
+  };
+  const handleDragOver = (index) => (e) => {
+    e.preventDefault();
+    if (queue[index]?.state !== 'pending') return;
+    setDragOverIndex(index);
+  };
+  const handleDrop = (index) => (e) => {
+    e.preventDefault();
+    setDragOverIndex(null);
+    if (dragIndex === null || dragIndex === index) return;
+    if (queue[dragIndex]?.state !== 'pending' || queue[index]?.state !== 'pending') {
+      setDragIndex(null);
+      return;
+    }
+    setQueue((prev) => {
+      const next = [...prev];
+      const [moved] = next.splice(dragIndex, 1);
+      next.splice(index, 0, moved);
+      return next;
+    });
+    setDragIndex(null);
+  };
+
   const runAutopilot = async () => {
     if (!fb) {
       setError('Connect a Facebook Page first, in Connect profile.');
       return;
     }
-    if (topics.length === 0) {
+    if (topics.length === 0 && queue.every((q) => q.state !== 'pending')) {
       setError('Add at least one topic to auto-post about.');
       return;
     }
@@ -722,55 +863,70 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
       }).catch(() => {});
     }
 
-    // Round-robin the topics so consecutive posts don't repeat the same one.
-    const slots = [];
-    for (let r = 0; r < postsPerTopic; r++) {
-      for (const t of topics) slots.push(t);
-    }
-    const initialQueue = slots.map((t, i) => ({ id: `${Date.now()}-${i}`, topic: t, state: 'pending' }));
-    setQueue(initialQueue);
+    // If the queue is empty (first run), build it from the topic list. If
+    // there's already a queue (e.g. items merged in from a sheet, or a
+    // previous run's leftovers), just work through whatever is pending —
+    // this is what makes re-running "top up" the existing queue instead of
+    // wiping it.
+    const workQueue = queue.length > 0 ? queue : buildQueueFromTopics();
 
     const nowSec = Math.floor(Date.now() / 1000);
     const intervalSec = Math.round(intervalHours * 3600);
     const recentByTopic = {};
     let scheduleSteps = 0;
+    let immediateUsed = false;
 
-    for (let i = 0; i < slots.length; i++) {
-      const topic = slots[i];
-      const id = initialQueue[i].id;
+    for (let i = 0; i < workQueue.length; i++) {
+      const item = workQueue[i];
+      if (item.state !== 'pending') continue; // skip anything already run, deleted, or mid-flight
+
+      const { id, topic } = item;
       setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'writing' } : q)));
 
       try {
         const recentAngles = recentByTopic[topic] || [];
-        const post = await generateAutoPost({ topic, tone, includeHashtags, emojiLevel, recentAngles }, geminiKey);
+        const post = await generateAutoPostFromTopic({ topic, tone, includeHashtags, emojiLevel, recentAngles }, geminiKey);
         if (!post || !post.caption) throw new Error('The AI agent did not return a usable post — it will skip this slot.');
         recentByTopic[topic] = [...recentAngles, post.angle].filter(Boolean).slice(-5);
 
-        let imageUrl = null;
-        if (includeImages && post.imagePrompt) {
-          setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'image', caption: post.caption, angle: post.angle } : q)));
-          const { base64, mimeType } = await generateImageSmart(post.imagePrompt, {
-            provider: imageProvider,
-            geminiKey,
-            aspectRatio: imageAspectRatio,
-          });
-          imageUrl = await uploadGeneratedImage(user.uid, base64, mimeType);
+        // Update #5 — post with real Unicode bold applied from the polished version.
+        const finalCaption = applyMarkdownBold(post.polishedCaption || post.caption);
+
+        let imageUrl = item.imageUrl || null;
+
+        // Update #7 — image is generated automatically for every post, and
+        // the queue row shows a live thumbnail preview the moment it's ready.
+        if (includeImages && !imageUrl && post.imagePrompt) {
+          setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, state: 'image', caption: finalCaption, angle: post.angle } : q)));
+          try {
+            const { base64, mimeType } = await generateImageSmart(post.imagePrompt, {
+              provider: imageProvider,
+              geminiKey,
+              aspectRatio: imageAspectRatio,
+            });
+            imageUrl = await uploadGeneratedImage(user.uid, base64, mimeType);
+            // Show the preview immediately, before scheduling.
+            setQueue((prev) => prev.map((q) => (q.id === id ? { ...q, imageUrl, state: 'preview' } : q)));
+          } catch (imgErr) {
+            console.warn('Image generation failed, continuing without image:', imgErr);
+          }
         }
 
-        const isImmediate = postFirstNow && i === 0;
+        const isImmediate = postFirstNow && !immediateUsed;
         setQueue((prev) =>
-          prev.map((q) => (q.id === id ? { ...q, state: 'scheduling', caption: post.caption, angle: post.angle, imageUrl } : q))
+          prev.map((q) => (q.id === id ? { ...q, state: 'scheduling', caption: finalCaption, angle: post.angle, imageUrl } : q))
         );
 
         if (isImmediate) {
+          immediateUsed = true;
           const res = await publishToPage({
             pageId: fb.pageId,
             pageAccessToken: fb.pageAccessToken,
-            message: post.caption,
+            message: finalCaption,
             imageUrl: imageUrl || undefined,
           });
           await savePost(user.uid, {
-            caption: post.caption,
+            caption: finalCaption,
             imageUrl: imageUrl || null,
             status: 'posted',
             fbPostId: res.id,
@@ -796,12 +952,12 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
           const res = await schedulePost({
             pageId: fb.pageId,
             pageAccessToken: fb.pageAccessToken,
-            message: post.caption,
+            message: finalCaption,
             publishTimeUnix: publishAt,
             imageUrl: imageUrl || undefined,
           });
           await savePost(user.uid, {
-            caption: post.caption,
+            caption: finalCaption,
             imageUrl: imageUrl || null,
             status: 'scheduled',
             fbPostId: res.id,
@@ -821,6 +977,7 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
     setRunning(false);
   };
 
+  const pendingCount = queue.filter((q) => q.state === 'pending').length;
   const finished = !running && queue.length > 0 && queue.every((q) => q.state === 'posted' || q.state === 'scheduled' || q.state === 'failed');
 
   return (
@@ -857,7 +1014,11 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
           )}
           <p className="field-hint">
             Add as many topics as you like — Agriculture, weekend specials, fitness tips… each post in the queue
-            rotates through them with a fresh angle every time.
+            rotates through them with a fresh angle every time. You can also build the queue first with{' '}
+            <button type="button" className="link-toggle" style={{ display: 'inline', padding: 0 }} onClick={buildQueueFromTopics} disabled={running || topics.length === 0}>
+              + Add to queue
+            </button>{' '}
+            without running it yet, so you can reorder or trim it first.
           </p>
         </div>
 
@@ -900,6 +1061,12 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
             </>
           )}
         </div>
+        {includeImages && (
+          <p className="field-hint" style={{ marginTop: 6 }}>
+            Images generate automatically in-app as each post runs — no new tabs, and each one shows a preview
+            thumbnail in the queue below the moment it's ready.
+          </p>
+        )}
       </div>
 
       <div className="ai-block">
@@ -957,30 +1124,55 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
 
       <button
         className="btn btn-accent btn-block"
-        disabled={running || topics.length === 0 || !fb}
+        disabled={running || (topics.length === 0 && pendingCount === 0) || !fb}
         onClick={runAutopilot}
       >
-        {running ? 'Generating & scheduling…' : `Generate & schedule ${totalPosts || ''} post${totalPosts === 1 ? '' : 's'}`}
+        {running
+          ? 'Generating & scheduling…'
+          : queue.length > 0
+          ? `Generate & schedule ${pendingCount || totalPosts} post${(pendingCount || totalPosts) === 1 ? '' : 's'}`
+          : `Generate & schedule ${totalPosts || ''} post${totalPosts === 1 ? '' : 's'}`}
       </button>
       {!fb && <p className="field-error" style={{ marginTop: 8 }}>Connect a Facebook Page first, in Connect profile.</p>}
       {error && <div className="field-error" style={{ marginTop: 10 }}>{error}</div>}
 
       {queue.length > 0 && (
         <div className="ai-block" style={{ marginTop: 22, borderTop: '1px dashed var(--line)', paddingTop: 20 }}>
-          <label className="field-label-standalone">Queue</label>
-          <div className="post-list">
-            {queue.map((q) => {
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <label className="field-label-standalone" style={{ margin: 0 }}>Queue ({queue.length})</label>
+            <p className="field-hint" style={{ margin: 0 }}>Drag ⋮⋮ to reorder · ✕ to delete before it runs</p>
+          </div>
+          <div className="post-list" style={{ marginTop: 10 }}>
+            {queue.map((q, idx) => {
               let label = 'Waiting…';
               let cls = 'idle';
               if (q.state === 'writing') { label = 'Writing caption…'; cls = 'warn'; }
               else if (q.state === 'image') { label = 'Generating image…'; cls = 'warn'; }
+              else if (q.state === 'preview') { label = 'Image ready — scheduling next…'; cls = 'warn'; }
               else if (q.state === 'scheduling') { label = 'Scheduling…'; cls = 'warn'; }
               else if (q.state === 'posted') { label = 'Posted ✓'; cls = 'live'; }
               else if (q.state === 'scheduled') { label = `Scheduled · ${new Date(q.scheduledFor).toLocaleString()}`; cls = 'ok'; }
               else if (q.state === 'failed') { label = 'Failed'; cls = 'warn'; }
+              else if (q.state === 'pending') { label = q.source === 'sheet' ? 'From sheet · waiting' : 'Waiting…'; cls = 'idle'; }
+
+              const draggable = q.state === 'pending';
 
               return (
-                <div key={q.id} className="card post-row">
+                <div
+                  key={q.id}
+                  className="card post-row"
+                  draggable={draggable}
+                  onDragStart={handleDragStart(q.id)}
+                  onDragOver={handleDragOver(idx)}
+                  onDrop={handleDrop(idx)}
+                  onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                  style={{
+                    opacity: dragIndex !== null && queue[dragIndex]?.id === q.id ? 0.5 : 1,
+                    background: dragOverIndex === idx ? 'var(--bg-2)' : undefined,
+                    cursor: draggable ? 'grab' : 'default',
+                  }}
+                >
+                  {draggable && <span style={{ marginRight: 6, opacity: 0.5 }}>⋮⋮</span>}
                   {q.imageUrl ? (
                     <img src={q.imageUrl} alt="" className="post-row-thumb" />
                   ) : (
@@ -991,6 +1183,17 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
                     {q.caption ? q.caption.split('\n')[0] : <span className="field-hint">…</span>}
                   </div>
                   <span className={`badge badge-${cls}`}>{label}</span>
+                  {draggable && (
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ marginLeft: 6 }}
+                      onClick={() => deleteFromQueue(q.id)}
+                      aria-label="Remove from queue"
+                      title="Delete — this will never be posted"
+                    >
+                      ✕
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -1002,8 +1205,8 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
           )}
           {finished && (
             <p className="field-hint" style={{ marginTop: 14 }}>
-              Done — check the <Link to="/log">broadcast log</Link> for full status, or run Auto-pilot again any
-              time to top up the queue.
+              Done — check the <Link to="/log">broadcast log</Link> for full status, or add more topics and run
+              Auto-pilot again any time to top up the queue.
             </p>
           )}
         </div>

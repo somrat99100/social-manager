@@ -4,6 +4,7 @@ import {
   addDoc,
   updateDoc,
   deleteDoc,
+  getDoc,
   onSnapshot,
   query,
   orderBy,
@@ -42,6 +43,22 @@ export async function savePost(uid, post, existingId) {
 
 export async function deletePost(uid, id) {
   await deleteDoc(doc(db, 'users', uid, 'posts', id));
+}
+
+/**
+ * Flip a post's status (e.g. 'scheduled' -> 'posted') once Facebook confirms
+ * it actually went live. Used by the broadcast log's background status check.
+ */
+export async function updatePostStatus(uid, postId, newStatus) {
+  await updateDoc(doc(db, 'users', uid, 'posts', postId), {
+    status: newStatus,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function getPost(uid, postId) {
+  const snap = await getDoc(doc(db, 'users', uid, 'posts', postId));
+  return snap.exists() ? { id: snap.id, ...snap.data() } : null;
 }
 
 // ---- Saved captions library ----

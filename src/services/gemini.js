@@ -193,6 +193,109 @@ Respond ONLY as this JSON object, no markdown, no code fences, no commentary:
   return safeParseJsonObject(textOf(data));
 }
 
+/**
+ * Generate a caption whose *entire prompt* is the topic the person typed —
+ * no intermediate "angle" step. Returns both a plain version and a
+ * "polished" version with 3-5 key words/phrases wrapped in **markdown
+ * bold** so the UI can render them as real bold text (Facebook has no
+ * markdown, so the caller should run the polished string through
+ * `applyMarkdownBold` from lib/text-format.js before using it as a caption).
+ */
+export async function generateCaptionsFromTopic(topic, apiKey, opts = {}) {
+  const { tone = 'friendly', includeHashtags = true, emojiLevel = 'tasteful' } = opts;
+  const toneDesc = TONE_GUIDES[tone] || TONE_GUIDES.friendly;
+
+  const prompt = `You're a social media manager writing a single Facebook post. The page owner gave you this exact prompt/topic to write about — treat it as the full brief, not just a keyword: "${topic}"
+
+Voice for this post: ${toneDesc}
+
+Write the caption:
+- Line 1 hooks attention in under 12 words — Facebook only shows the first line before "See more."
+- Short natural paragraphs (2-4 chunks), never one dense wall of text.
+- Sounds like a real person who runs this page: concrete details, contractions, real opinions, on-topic with what was asked.
+- Ends with one natural, low-friction call to action.
+- ${emojiRule(emojiLevel)}
+- ${hashtagRule(includeHashtags)}
+- ${AI_TELLS_RULE}
+- Under 90 words total, hashtags included.
+
+Respond with ONLY the caption text, nothing else — no JSON, no code fences, no preamble.`;
+
+  const data = await callGemini(TEXT_MODEL, { contents: [{ parts: [{ text: prompt }] }] }, apiKey);
+  const plain = textOf(data).trim();
+  const polished = await polishCaption(plain, apiKey).catch(() => plain);
+  return { plain, polished, topic };
+}
+
+/**
+ * Takes an already-written caption and wraps 3-5 of its most important
+ * words/phrases in **markdown bold** so the UI can offer a "polished"
+ * version alongside the plain one. Convert the result with
+ * `applyMarkdownBold` before posting to Facebook (Graph API has no markdown).
+ */
+export async function polishCaption(caption, apiKey) {
+  const text = (caption || '').trim();
+  if (!text) return text;
+
+  const prompt = `Add emphasis to this Facebook caption by wrapping 3-5 of its most important words or short phrases (the ones that carry the most weight — a benefit, a number, a strong verb, the call to action) in **double asterisks**, markdown-bold style. Do not change any wording, punctuation, line breaks, or add/remove anything — only insert the ** marks around existing words. Don't bold more than 5 spans, and never bold a whole sentence.
+
+Caption:
+"""
+${text}
+"""
+
+Respond with ONLY the same caption, unchanged except for the added **bold** marks. No commentary.`;
+
+  const data = await callGemini(TEXT_MODEL, { contents: [{ parts: [{ text: prompt }] }] }, apiKey);
+  const out = textOf(data).trim();
+  return out || text;
+}
+
+/**
+ * Auto-pilot generator, topic-as-prompt version: the topic is used verbatim
+ * as the creative brief (rather than just a subject line), and the caption
+ * comes back pre-polished with **bold** markdown emphasis in addition to the
+ * plain version, so the caller can show/use either.
+ */
+export async function generateAutoPostFromTopic(opts, apiKey) {
+  const { topic, tone = 'trendy', includeHashtags = true, emojiLevel = 'tasteful', recentAngles = [] } = opts;
+  const toneDesc = TONE_GUIDES[tone] || TONE_GUIDES.trendy;
+  const avoidRule =
+    recentAngles.length > 0
+      ? `Do not repeat or lightly reword any of these angles already used recently: ${recentAngles.map((a) => `"${a}"`).join(', ')}. Find a genuinely different one.`
+      : '';
+
+  const prompt = `You're an autonomous Facebook content creator. The page owner gave you this exact prompt to write about — treat it as the full creative brief, not just a keyword: "${topic}"
+
+First, invent ONE fresh, specific angle that stays directly relevant to that prompt and would actually stop someone mid-scroll today — a practical tip, a myth-bust, a quick stat, a relatable mini-story, a seasonal or timely tie-in, a question, or a behind-the-scenes detail. ${avoidRule}
+
+Voice for this post: ${toneDesc}
+
+Then write the Facebook caption for it:
+- Line 1 hooks in under 12 words.
+- Short natural paragraphs (2-4 chunks), never one dense block.
+- Sounds like a real person posting to their own page, not a press release.
+- Stays on-topic with the prompt above.
+- Ends with one natural, low-friction call to action.
+- ${emojiRule(emojiLevel)}
+- ${hashtagRule(includeHashtags)}
+- ${AI_TELLS_RULE}
+- Under 90 words total, hashtags included.
+
+Finally, write a short, vivid image prompt (under 25 words) for an image that pairs with this exact caption — concrete, specific, photographic or clean illustrative style, well-lit, no text or logos in the image.
+
+Respond ONLY as this JSON object, no markdown, no code fences, no commentary:
+{"angle": "short label for the angle you picked", "caption": "the full caption with real line breaks as \\n", "imagePrompt": "the image prompt"}`;
+
+  const data = await callGemini(TEXT_MODEL, { contents: [{ parts: [{ text: prompt }] }] }, apiKey);
+  const result = safeParseJsonObject(textOf(data));
+  if (!result || !result.caption) return result;
+
+  result.plainCaption = result.caption;
+  result.polishedCaption = await polishCaption(result.caption, apiKey).catch(() => result.caption);
+  return result;
+}
+
 /** Aspect ratios supported by Gemini's image model, for a picker in the UI. */
 export const IMAGE_ASPECT_OPTIONS = [
   { value: '1:1', label: 'Square · 1:1' },

@@ -55,6 +55,32 @@ export async function fetchPageInfo(pageId, pageAccessToken) {
 }
 
 /**
+ * Check whether a post that was scheduled has actually gone out yet.
+ * Facebook publishes scheduled posts on its own servers at the scheduled
+ * time — this just asks the Graph API for the post's current status so the
+ * app can flip a post's status from "scheduled" to "posted" once it's live.
+ * Returns 'posted' | 'scheduled' | 'unknown' (e.g. deleted, or a transient error).
+ */
+export async function checkPostStatus(postId, pageAccessToken) {
+  try {
+    const res = await fetch(
+      `${GRAPH}/${postId}?fields=is_published&access_token=${encodeURIComponent(pageAccessToken)}`
+    );
+    const data = await res.json();
+    if (data.error) {
+      // Facebook returns error code 100/etc. for a scheduled post that hasn't
+      // published yet in some API versions — treat any "can't see it" error
+      // as still-scheduled rather than assuming failure.
+      return 'unknown';
+    }
+    if (data.is_published === false) return 'scheduled';
+    return 'posted';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * Publish a post to a Page. Text-only posts go to /feed; posts with an image
  * go to /photos so the image renders inline like a normal Facebook photo post.
  * `imageBase64` should be a raw base64 string (no data: prefix). `imageUrl` is

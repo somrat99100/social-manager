@@ -14,6 +14,12 @@ export default function Settings() {
   const [showFbGuide, setShowFbGuide] = useState(false);
   const [showConnectForm, setShowConnectForm] = useState(false);
 
+  // Update #2 — keep the pasted token permanently so pages can be
+  // re-fetched/reconnected later without pasting it in again.
+  const [showTokenSaveForm, setShowTokenSaveForm] = useState(false);
+  const [tokenJustSaved, setTokenJustSaved] = useState(false);
+  const savedUserToken = profile?.fbUserToken || '';
+
   const [geminiKey, setGeminiKey] = useState(profile?.geminiApiKey || '');
   const [geminiSaved, setGeminiSaved] = useState(false);
   const [geminiError, setGeminiError] = useState('');
@@ -25,19 +31,52 @@ export default function Settings() {
   const [driveError, setDriveError] = useState('');
   const [showDriveGuide, setShowDriveGuide] = useState(false);
 
-  const findPages = async () => {
-    if (!userToken.trim()) return;
+  const findPages = async (tokenOverride) => {
+    const token = (tokenOverride ?? userToken).trim();
+    if (!token) return;
     setFbError('');
     setLoadingPages(true);
     setFoundPages([]);
     try {
-      const result = await fetchManagedPages(userToken.trim());
+      const result = await fetchManagedPages(token);
       if (result.length === 0) setFbError('That token worked, but no Pages were found for it.');
       setFoundPages(result);
+      // Automatically keep this token on file so "Refresh pages" works later
+      // without asking for it again — this is what makes the connection
+      // permanent instead of a one-time paste.
+      if (result.length > 0 && token !== savedUserToken) {
+        updateProfile({ fbUserToken: token }).catch(() => {});
+      }
     } catch (e) {
       setFbError(e.message);
     } finally {
       setLoadingPages(false);
+    }
+  };
+
+  const saveTokenOnly = async () => {
+    if (!userToken.trim()) return;
+    try {
+      await updateProfile({ fbUserToken: userToken.trim() });
+      setTokenJustSaved(true);
+      setTimeout(() => setTokenJustSaved(false), 2000);
+    } catch (e) {
+      console.error('Failed to save Facebook token:', e);
+      setFbError('Could not save the token. Please try again.');
+    }
+  };
+
+  const refreshWithSavedToken = () => {
+    if (!savedUserToken) return;
+    findPages(savedUserToken);
+  };
+
+  const clearSavedToken = async () => {
+    if (!confirm("Remove the saved token? You'll need to paste it again to reconnect or refresh pages.")) return;
+    try {
+      await updateProfile({ fbUserToken: '' });
+    } catch (e) {
+      console.error('Failed to clear saved token:', e);
     }
   };
 
@@ -140,10 +179,14 @@ export default function Settings() {
                   onChange={(e) => setUserToken(e.target.value)}
                   placeholder="Paste your token"
                 />
-                <button className="btn btn-primary" onClick={findPages} disabled={loadingPages || !userToken.trim()}>
+                <button className="btn btn-primary" onClick={() => findPages()} disabled={loadingPages || !userToken.trim()}>
                   {loadingPages ? 'Looking…' : 'Find pages'}
                 </button>
               </div>
+              <p className="field-hint" style={{ marginTop: 6 }}>
+                This token is saved automatically once it works, so you won't need to paste it again — use
+                "Refresh pages" below any time.
+              </p>
               {fbError && <div className="field-error">{fbError}</div>}
             </div>
 
@@ -188,6 +231,57 @@ export default function Settings() {
             + Add another page
           </button>
         )}
+
+        {/* Update #2 — permanent token storage */}
+        <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
+          <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Saved access token</span>
+            {savedUserToken && <span className="badge badge-ok">Stored</span>}
+          </label>
+          {savedUserToken ? (
+            <>
+              <div
+                className="field-hint mono"
+                style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, marginTop: 8, wordBreak: 'break-all' }}
+              >
+                {savedUserToken.slice(0, 24)}…{savedUserToken.slice(-8)}
+              </div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                <button className="btn btn-primary btn-sm" onClick={refreshWithSavedToken} disabled={loadingPages}>
+                  {loadingPages ? 'Refreshing…' : '↻ Refresh pages with saved token'}
+                </button>
+                <button className="btn btn-danger btn-sm" onClick={clearSavedToken}>Remove saved token</button>
+              </div>
+              <p className="field-hint" style={{ marginTop: 8 }}>
+                Social Manager keeps this token on file so you never have to paste it in again — reconnecting or
+                refreshing pages later is one click.
+              </p>
+            </>
+          ) : (
+            <>
+              {!showTokenSaveForm ? (
+                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => setShowTokenSaveForm(true)}>
+                  + Save a token for future use
+                </button>
+              ) : (
+                <div style={{ marginTop: 8 }}>
+                  <textarea
+                    value={userToken}
+                    onChange={(e) => setUserToken(e.target.value)}
+                    placeholder="Paste your Facebook token here to store it"
+                    style={{ minHeight: 60, fontFamily: 'monospace', fontSize: 12 }}
+                  />
+                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                    <button className="btn btn-primary btn-sm" onClick={saveTokenOnly} disabled={!userToken.trim()}>
+                      {tokenJustSaved ? 'Saved ✓' : 'Save token'}
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => setShowTokenSaveForm(false)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
         <button className="link-toggle" onClick={() => setShowFbGuide((v) => !v)}>
           {showFbGuide ? 'Hide guide' : 'How do I get a token?'}
