@@ -9,15 +9,22 @@ import {
   orderBy,
   serverTimestamp,
 } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db } from '../config/firebase.js';
 
 // ---- Posts (drafts / scheduled / posted live in one collection, distinguished by status) ----
 
 export function watchPosts(uid, cb) {
   const q = query(collection(db, 'users', uid, 'posts'), orderBy('updatedAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-  });
+  return onSnapshot(
+    q,
+    (snap) => {
+      cb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    },
+    (err) => {
+      console.error('Failed to load posts from Firestore:', err);
+      cb([]);
+    }
+  );
 }
 
 export async function savePost(uid, post, existingId) {
@@ -41,9 +48,16 @@ export async function deletePost(uid, id) {
 
 export function watchSavedTexts(uid, cb) {
   const q = query(collection(db, 'users', uid, 'savedTexts'), orderBy('createdAt', 'desc'));
-  return onSnapshot(q, (snap) => {
-    cb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-  });
+  return onSnapshot(
+    q,
+    (snap) => {
+      cb(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    },
+    (err) => {
+      console.error('Failed to load saved texts from Firestore:', err);
+      cb([]);
+    }
+  );
 }
 
 export async function saveText(uid, text) {

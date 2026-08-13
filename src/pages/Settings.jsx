@@ -15,6 +15,7 @@ export default function Settings() {
 
   const [geminiKey, setGeminiKey] = useState(profile?.geminiApiKey || '');
   const [geminiSaved, setGeminiSaved] = useState(false);
+  const [geminiError, setGeminiError] = useState('');
   const [showGeminiGuide, setShowGeminiGuide] = useState(false);
 
   const findPages = async () => {
@@ -34,28 +35,44 @@ export default function Settings() {
   };
 
   const connectPage = async (page) => {
-    await updateProfile({
-      fb: {
-        pageId: page.id,
-        pageAccessToken: page.accessToken,
-        name: page.name,
-        avatar: page.avatar,
-        fanCount: page.fanCount,
-        connectedAt: Date.now(),
-      },
-    });
-    setPages([]);
-    setUserToken('');
+    try {
+      await updateProfile({
+        fb: {
+          pageId: page.id,
+          pageAccessToken: page.accessToken,
+          name: page.name,
+          avatar: page.avatar,
+          fanCount: page.fanCount,
+          connectedAt: Date.now(),
+        },
+      });
+      setPages([]);
+      setUserToken('');
+    } catch (e) {
+      console.error('Failed to save connected page:', e);
+      setFbError('Could not save that connection. Please try again.');
+    }
   };
 
   const disconnectPage = async () => {
-    await updateProfile({ fb: null });
+    try {
+      await updateProfile({ fb: null });
+    } catch (e) {
+      console.error('Failed to disconnect page:', e);
+      setFbError('Could not disconnect right now. Please try again.');
+    }
   };
 
   const saveGeminiKey = async () => {
-    await updateProfile({ geminiApiKey: geminiKey.trim() });
-    setGeminiSaved(true);
-    setTimeout(() => setGeminiSaved(false), 2000);
+    setGeminiError('');
+    try {
+      await updateProfile({ geminiApiKey: geminiKey.trim() });
+      setGeminiSaved(true);
+      setTimeout(() => setGeminiSaved(false), 2000);
+    } catch (e) {
+      console.error('Failed to save Gemini key:', e);
+      setGeminiError('Could not save the key. Please try again.');
+    }
   };
 
   return (
@@ -155,6 +172,7 @@ export default function Settings() {
               {geminiSaved ? 'Saved ✓' : 'Save'}
             </button>
           </div>
+          {geminiError && <div className="field-error">{geminiError}</div>}
         </div>
         <button className="link-toggle" onClick={() => setShowGeminiGuide((v) => !v)}>
           {showGeminiGuide ? 'Hide' : 'How do I get a key?'}

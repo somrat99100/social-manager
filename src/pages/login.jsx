@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
-import { firebaseReady } from '../firebase';
+import { firebaseReady } from '../config/firebase.js';
 
 export default function Login() {
   const { login, signup, blocked, ownerConfigured } = useAuth();
@@ -40,7 +40,7 @@ export default function Login() {
             This app uses Firebase for login and storage — free on the Spark plan. Create a project at{' '}
             <strong>console.firebase.google.com</strong>, enable <strong>Authentication → Email/Password</strong> and{' '}
             <strong>Firestore Database</strong>, then paste your web app config into{' '}
-            <code className="mono">src/firebase-config.js</code>.
+            <code className="mono">src/config/firebase-config.js</code>.
           </p>
         </div>
       </div>
@@ -54,7 +54,7 @@ export default function Login() {
           <div className="auth-mark">S</div>
           <h1>This app isn't locked down yet</h1>
           <p className="field-hint" style={{ marginTop: 8, lineHeight: 1.6 }}>
-            Set <code className="mono">OWNER_EMAIL</code> in <code className="mono">src/owner-config.js</code> to
+            Set <code className="mono">OWNER_EMAIL</code> in <code className="mono">src/config/owner-config.js</code> to
             your own email before deploying — until then, anyone could sign up and use it.
           </p>
         </div>

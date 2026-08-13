@@ -6,8 +6,8 @@ import {
   onAuthStateChanged,
 } from 'firebase/auth';
 import { doc, onSnapshot, setDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db, firebaseReady } from '../firebase';
-import { OWNER_EMAIL } from '../owner-config';
+import { auth, db, firebaseReady } from '../config/firebase.js';
+import { OWNER_EMAIL } from '../config/owner-config.js';
 
 const AuthContext = createContext(null);
 
@@ -48,15 +48,25 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     if (!user || !firebaseReady) return;
     const ref = doc(db, 'users', user.uid);
-    const unsub = onSnapshot(ref, (snap) => {
-      setProfile(snap.exists() ? snap.data() : null);
-    });
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        setProfile(snap.exists() ? snap.data() : null);
+      },
+      (err) => {
+        // Without this, a Firestore rules rejection (or offline error) would
+        // leave `profile` stuck at `undefined` forever and the app would hang
+        // on the loading screen with no explanation.
+        console.error('Failed to load profile from Firestore:', err);
+        setProfile(null);
+      }
+    );
     return unsub;
   }, [user]);
 
   const signup = useCallback(async (email, password) => {
     if (!ownerConfigured) {
-      throw new Error('This app has not been locked to an owner email yet — set OWNER_EMAIL in src/owner-config.js.');
+      throw new Error('This app has not been locked to an owner email yet — set OWNER_EMAIL in src/config/owner-config.js.');
     }
     if (!isOwner(email)) {
       throw new Error('This app is private. Only the owner account can be created here.');

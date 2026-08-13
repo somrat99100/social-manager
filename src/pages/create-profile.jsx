@@ -8,12 +8,20 @@ export default function CreateProfile() {
   const [name, setName] = useState('');
   const [avatar, setAvatar] = useState(AVATARS[0]);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   const submit = async (e) => {
     e.preventDefault();
+    setError('');
     setBusy(true);
-    await createProfile({ name: name.trim(), avatar });
-    setBusy(false);
+    try {
+      await createProfile({ name: name.trim(), avatar });
+    } catch (err) {
+      console.error('Failed to create profile:', err);
+      setError('Could not save your profile. Check your connection and try again.');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -45,6 +53,7 @@ export default function CreateProfile() {
               ))}
             </div>
           </div>
+          {error && <div className="field-error" style={{ marginBottom: 14 }}>{error}</div>}
           <button className="btn btn-accent btn-block" disabled={busy || !name.trim()}>
             {busy ? 'Creating…' : 'Continue'}
           </button>

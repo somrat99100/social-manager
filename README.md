@@ -27,7 +27,7 @@ added as its own step in the AI agent flow.
 ## Setup (all free)
 
 ### 0. Lock the app to only you
-Open `src/owner-config.js` and set `OWNER_EMAIL` to your own email address. With this set,
+Open `src/config/owner-config.js` and set `OWNER_EMAIL` to your own email address. With this set,
 only that exact email can log in or sign up — anyone else who finds the site's URL and tries
 to create an account is signed out immediately. Do this before deploying.
 
@@ -36,7 +36,7 @@ to create an account is signed out immediately. Do this before deploying.
 2. Build -> Authentication -> Get started -> enable Email/Password.
 3. Build -> Firestore Database -> Create database -> start in test mode (or production mode with the rules below).
 4. Project settings -> General -> Your apps -> add a Web app -> copy the config object.
-5. Paste it into `src/firebase-config.js`.
+5. Paste it into `src/config/firebase-config.js`.
 
 Recommended Firestore rules (personal, single-user data only readable/writable by its owner):
 ```
@@ -84,7 +84,7 @@ ever starts failing with an auth error, go back to Connect profile and reconnect
 
 This is a client-only app (no backend server), which has real limits worth knowing:
 
-- **Owner lock** (`src/owner-config.js`) stops anyone else from creating an account or logging in.
+- **Owner lock** (`src/config/owner-config.js`) stops anyone else from creating an account or logging in.
   This is the main protection since the site itself is public at your GitHub Pages URL.
 - **Firestore rules** (see above) stop any account that *did* somehow get in from reading another
   account's data. Set these even though only you should ever be logged in — defense in depth.

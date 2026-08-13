@@ -6,7 +6,7 @@ import CreateProfile from './pages/create-profile';
 import Home from './pages/home';
 import CreatePost from './pages/create-post';
 import Log from './pages/log';
-import Settings from './pages/settings';
+import Settings from './pages/Settings';
 
 function Gate({ children }) {
   const { user, profile, loading } = useAuth();
