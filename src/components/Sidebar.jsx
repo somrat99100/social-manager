@@ -5,6 +5,7 @@ import TallyDot from './tally-dot';
 const navItems = [
   { to: '/', label: 'Home', icon: '⌂' },
   { to: '/create', label: 'Create post', icon: '✎' },
+  { to: '/sheet-import', label: 'Post from sheet', icon: '▦' },
   { to: '/log', label: 'Broadcast log', icon: '▤' },
   { to: '/settings', label: 'Connect profile', icon: '⚙' },
 ];

@@ -53,8 +53,17 @@ export default function Log() {
           {visible.map((p) => (
             <div key={p.id} className="card post-row post-row-lg">
               <TallyDot status={p.status === 'posted' ? 'live' : p.status === 'scheduled' ? 'ok' : 'warn'} />
-              {p.imageDataUrl && <img src={p.imageDataUrl} alt="" className="post-row-thumb" />}
-              <div className="post-row-text">{p.caption || '(no caption)'}</div>
+              {(p.imageDataUrl || p.imageUrl) && (
+                <img src={p.imageDataUrl || p.imageUrl} alt="" className="post-row-thumb" />
+              )}
+              <div className="post-row-text">
+                {p.caption || '(no caption)'}
+                {p.status === 'scheduled' && p.scheduledAt && (
+                  <span className="field-hint" style={{ display: 'block' }}>
+                    Scheduled for {new Date(p.scheduledAt).toLocaleString()}
+                  </span>
+                )}
+              </div>
               <span className={`badge badge-${p.status === 'posted' ? 'live' : p.status === 'scheduled' ? 'ok' : 'warn'}`}>
                 {p.status}
               </span>

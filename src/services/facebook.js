@@ -39,13 +39,20 @@ export async function fetchPageInfo(pageId, pageAccessToken) {
 /**
  * Publish a post to a Page. Text-only posts go to /feed; posts with an image
  * go to /photos so the image renders inline like a normal Facebook photo post.
- * `imageBase64` should be a raw base64 string (no data: prefix).
+ * `imageBase64` should be a raw base64 string (no data: prefix). `imageUrl` is
+ * a direct link to a publicly hosted image — Facebook fetches it server-side,
+ * so nothing needs to be downloaded into the browser first (handy for images
+ * that come from a Google Sheet).
  */
-export async function publishToPage({ pageId, pageAccessToken, message, imageBase64 }) {
-  if (imageBase64) {
-    const blob = base64ToBlob(imageBase64, 'image/png');
+export async function publishToPage({ pageId, pageAccessToken, message, imageBase64, imageUrl }) {
+  if (imageBase64 || imageUrl) {
     const form = new FormData();
-    form.append('source', blob, 'post-image.png');
+    if (imageBase64) {
+      const blob = base64ToBlob(imageBase64, 'image/png');
+      form.append('source', blob, 'post-image.png');
+    } else {
+      form.append('url', imageUrl);
+    }
     form.append('caption', message || '');
     form.append('access_token', pageAccessToken);
     const res = await fetch(`${GRAPH}/${pageId}/photos`, { method: 'POST', body: form });
@@ -63,8 +70,25 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
   return { id: data.id };
 }
 
-/** Schedule a post for the future (Facebook requires 10 min - 75 days out). */
-export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix }) {
+/**
+ * Schedule a post for the future (Facebook requires 10 min - 75 days out).
+ * This is handled entirely on Facebook's side once submitted — the post goes
+ * out at `publishTimeUnix` even if this browser tab is closed. Pass `imageUrl`
+ * for a photo post scheduled from a direct image link.
+ */
+export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl }) {
+  if (imageUrl) {
+    const form = new FormData();
+    form.append('url', imageUrl);
+    form.append('caption', message || '');
+    form.append('published', 'false');
+    form.append('scheduled_publish_time', String(publishTimeUnix));
+    form.append('access_token', pageAccessToken);
+    const res = await fetch(`${GRAPH}/${pageId}/photos`, { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    return { id: data.post_id || data.id };
+  }
   const res = await fetch(`${GRAPH}/${pageId}/feed`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

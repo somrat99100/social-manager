@@ -108,7 +108,9 @@ export default function Home() {
               {recent.map((p) => (
                 <div key={p.id} className="card post-row">
                   <TallyDot status={p.status === 'posted' ? 'live' : p.status === 'scheduled' ? 'ok' : 'warn'} />
-                  {p.imageDataUrl && <img src={p.imageDataUrl} alt="" className="post-row-thumb" />}
+                  {(p.imageDataUrl || p.imageUrl) && (
+                    <img src={p.imageDataUrl || p.imageUrl} alt="" className="post-row-thumb" />
+                  )}
                   <div className="post-row-text">{p.caption || '(no caption)'}</div>
                   <span className={`badge badge-${p.status === 'posted' ? 'live' : p.status === 'scheduled' ? 'ok' : 'warn'}`}>
                     {p.status}

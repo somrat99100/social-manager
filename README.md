@@ -14,6 +14,11 @@ images — all on free tiers. Preview before you publish, and post now or save a
   - **AI agent** — give it a topic, it suggests content angles, pick one, it writes 3 captions, pick/edit, describe an image, it generates one (Gemini's free image tier)
   - **Saved text** — save any caption (written or AI-generated) and reuse it later
   - Every post goes through a **preview** before you choose **Post now** or **Save as draft**
+- **Post from Google Sheet** — connect a public sheet (`Caption` + `Image Link` columns), fetch its rows into a
+  numbered, click-to-preview queue, pick a posting interval (30 min up to custom hours), and approve the batch.
+  The first post can go out immediately; every post after that is scheduled directly on Facebook's own servers
+  at `now + n × interval`, so they publish on time even if you close the browser. See "Post from Google Sheet"
+  below for the sheet-sharing requirement.
 - **Broadcast log** — every draft and posted item, with "continue editing" for drafts
 - **Settings** — manage your Facebook connection and Gemini API key, with built-in guides for getting both
 
@@ -61,6 +66,34 @@ Settings -> Connect profile has a built-in guide, in short:
 Settings -> Gemini API key has a built-in guide, in short:
 1. aistudio.google.com -> Get API key -> Create API key (no billing needed).
 2. Paste it in Social Manager.
+
+## Post from Google Sheet
+
+Sidebar -> **Post from sheet**. This reads the sheet straight from your browser (no API key, no backend)
+using Google's public CSV export, so it only works with sheets shared as **Anyone with the link — Viewer**.
+
+1. In Google Sheets: **Share** -> **General access** -> **Anyone with the link** -> **Viewer**.
+2. Put a header row on top. Columns named `Caption` (or `Text`/`Message`/`Content`) and `Image Link` (or
+   `Image`/`Image URL`/`Photo`) are matched automatically, case-insensitive; if nothing matches, column A is
+   used as the caption and column B as the image link. The image column needs a **direct, publicly viewable
+   image URL** (ending in something like `.jpg`/`.png`, or a direct-view link) — Facebook fetches it server-side,
+   so a Google Drive "share" link usually won't work unless it's a direct-view URL.
+3. Paste the sheet's URL into Social Manager, optionally name a specific tab, and click **Fetch rows**. Rows
+   show up numbered — click any row to open a full Facebook-style preview and edit its caption before approving.
+4. Pick a posting interval and whether the first post should go out immediately. Click **Approve & schedule**.
+5. Social Manager posts the first row right away (if selected) and hands every later row to Facebook's own
+   `scheduled_publish_time`, spaced `interval × row position` apart. Because Facebook does the actual
+   publishing on its own servers, the queue keeps going even if this tab is closed — there's no background
+   process running in your browser. Facebook only allows scheduling 10 minutes to 75 days ahead; rows that
+   would land past that window are marked failed so you can re-run the batch later.
+6. Re-fetching the same sheet is safe — rows already sent (tracked by sheet + row number + loop) are marked
+   "Already queued" and skipped automatically.
+7. Once every row in the sheet has been posted or scheduled, the Approve button is replaced by **Repeat from
+   the top**. Click it to start a new loop: every checked row is queued again from row 1, on the same interval,
+   without touching or duplicating the previous loop's posts (each loop gets its own dedupe key, shown as
+   "Loop 2", "Loop 3", etc. next to the row count). This is a manual step by design — nothing loops on its own
+   in the background, since this is a client-only app with no server process to trigger it while the tab is
+   closed.
 
 ## Run it
 

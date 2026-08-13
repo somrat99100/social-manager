@@ -5,6 +5,7 @@ import Login from './pages/login';
 import CreateProfile from './pages/create-profile';
 import Home from './pages/home';
 import CreatePost from './pages/create-post';
+import SheetImport from './pages/sheet-import';
 import Log from './pages/log';
 import Settings from './pages/Settings';
 
@@ -49,6 +50,7 @@ function AppRoutes() {
       >
         <Route path="/" element={<Home />} />
         <Route path="/create" element={<CreatePost />} />
+        <Route path="/sheet-import" element={<SheetImport />} />
         <Route path="/log" element={<Log />} />
         <Route path="/settings" element={<Settings />} />
       </Route>
