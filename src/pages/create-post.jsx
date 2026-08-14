@@ -3,8 +3,6 @@ import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
 import { publishToPage, schedulePost } from '../services/facebook';
 import {
-  suggestContentIdeas,
-  generateCaptions,
   generateCaptionsFromTopic,
   generateAutoPostFromTopic,
   suggestImagePrompt,
@@ -227,16 +225,14 @@ export default function CreatePost() {
             </div>
           )}
 
-          {mode === 'manual' && (
-            <button
-              className="btn btn-accent btn-block"
-              style={{ marginTop: 18 }}
-              disabled={!caption.trim() && !imageDataUrl}
-              onClick={() => setShowPreview(true)}
-            >
-              Preview post
-            </button>
-          )}
+          <button
+            className="btn btn-accent btn-block"
+            style={{ marginTop: 18 }}
+            disabled={!caption.trim() && !imageDataUrl}
+            onClick={() => setShowPreview(true)}
+          >
+            Preview post
+          </button>
         </div>
 
         <div className="composer-side">
@@ -309,36 +305,22 @@ function ManualComposer({ caption, setCaption, imageDataUrl, onFileChange, fileR
 function AiComposer({ geminiKey, user, profile, updateProfile, fb, caption, setCaption, imageDataUrl, setImageDataUrl, setImageBase64, onSaveText }) {
   const [aiMode, setAiMode] = useState('quick'); // 'quick' | 'autopilot'
 
-  if (!geminiKey) {
-    return (
-      <div className="card page-card empty-card">
-        <div className="empty-card-icon">✦</div>
-        <h3>Add a Gemini API key</h3>
-        <p className="field-hint" style={{ margin: '6px 0 16px' }}>
-          The AI agent needs a free Gemini API key to suggest content and write captions (this part is genuinely
-          free — no billing needed). Images don't need a key at all: they use a free provider by default, or you
-          can generate them yourself in the Gemini/ChatGPT web apps.
-        </p>
-        <Link to="/settings" className="btn btn-accent">Add key in Connect profile</Link>
-      </div>
-    );
-  }
-
   return (
     <div className="card page-card ai-agent-card">
       <div className="ai-agent-head">
         <span className="ai-agent-badge">✦ AI agent</span>
         <p className="field-hint" style={{ marginTop: 6 }}>
-          Trendy, humanized captions built for how people actually scroll Facebook — pick a voice, and let it write.
+          Trendy, humanized captions built for how people actually scroll Facebook — write with ChatGPT, Gemini,
+          or generate instantly in-app.
         </p>
       </div>
 
       <div className="guide-tabs ai-mode-tabs">
         <button className={`guide-tab-btn ${aiMode === 'quick' ? 'guide-tab-btn-active' : ''}`} onClick={() => setAiMode('quick')}>
-          Quick create
+          Create a post
         </button>
         <button className={`guide-tab-btn ${aiMode === 'autopilot' ? 'guide-tab-btn-active' : ''}`} onClick={() => setAiMode('autopilot')}>
-          Auto-pilot ✨
+          Auto-generate several ✨
         </button>
       </div>
 
@@ -352,6 +334,16 @@ function AiComposer({ geminiKey, user, profile, updateProfile, fb, caption, setC
           setImageBase64={setImageBase64}
           onSaveText={onSaveText}
         />
+      ) : !geminiKey ? (
+        <div className="card page-card empty-card" style={{ marginTop: 14 }}>
+          <div className="empty-card-icon">✦</div>
+          <h3>Add a Gemini API key</h3>
+          <p className="field-hint" style={{ margin: '6px 0 16px' }}>
+            Auto-generating several posts at once needs a free Gemini API key, since it writes and researches in
+            the background without you sitting in a ChatGPT/Gemini chat for each one.
+          </p>
+          <Link to="/settings" className="btn btn-accent">Add key in Connect profile</Link>
+        </div>
       ) : (
         <AutoPilot geminiKey={geminiKey} user={user} profile={profile} updateProfile={updateProfile} fb={fb} />
       )}
@@ -386,158 +378,139 @@ function ToneControls({ tone, setTone, emojiLevel, setEmojiLevel, includeHashtag
   );
 }
 
+/** Prompt sent into the docked ChatGPT/Gemini web app to write the caption there. */
+function buildCaptionBridgePrompt(brief, { tone, includeHashtags, emojiLevel }) {
+  const toneLabel = TONE_OPTIONS.find((t) => t.value === tone)?.label || 'Friendly & warm';
+  return `Write one Facebook caption for a page post. Brief: "${brief}"
+
+Voice: ${toneLabel}. ${emojiLevel === 'none' ? 'No emojis.' : emojiLevel === 'expressive' ? 'Use emojis freely and naturally.' : 'Use a few tasteful emojis.'} ${includeHashtags ? 'End with 3-5 relevant hashtags.' : 'No hashtags.'}
+
+Make it sound like a real page owner, not an AI: a punchy hook in the first line (Facebook truncates after that), short natural paragraph breaks, and one clear low-friction call to action at the end. Reply with ONLY the finished caption text, ready to paste straight into Facebook — no preamble, no options, no quotation marks around it.`;
+}
+
+/**
+ * Create a single post: a linear 3-step flow.
+ *   1. Write the caption — from a brief, using ChatGPT, Gemini, or an
+ *      instant in-app generator (all three write the same kind of trendy,
+ *      humanized Facebook caption; pick whichever you prefer).
+ *   2. Suggest & generate a matching image, again via ChatGPT, Gemini, or
+ *      an instant free generator.
+ *   3. Preview & post — handled by the shared button/modal in CreatePost().
+ */
 function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDataUrl, setImageBase64, onSaveText }) {
-  const [topic, setTopic] = useState('');
+  const [brief, setBrief] = useState('');
   const [tone, setTone] = useState('trendy');
   const [includeHashtags, setIncludeHashtags] = useState(true);
   const [emojiLevel, setEmojiLevel] = useState('tasteful');
 
-  const [ideas, setIdeas] = useState([]);
-  const [loadingIdeas, setLoadingIdeas] = useState(false);
-  const [selectedAngle, setSelectedAngle] = useState(null);
-
-  const [captionOptions, setCaptionOptions] = useState([]);
-  const [loadingCaptions, setLoadingCaptions] = useState(false);
+  const [writingInstant, setWritingInstant] = useState(false);
+  const [captionBridge, setCaptionBridge] = useState(null); // 'gemini' | 'chatgpt' | null
+  const [captionSource, setCaptionSource] = useState(null); // { label } once a caption has been written
 
   const [imagePrompt, setImagePrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('1:1');
-  const [imageProvider, setImageProvider] = useState('free');
-  const [imageProviderUsed, setImageProviderUsed] = useState(null);
-  const [loadingImage, setLoadingImage] = useState(false);
   const [suggestingPrompt, setSuggestingPrompt] = useState(false);
-  const [bridgeProvider, setBridgeProvider] = useState(null); // 'gemini' | 'chatgpt' | null
-  const [showBridgeOptions, setShowBridgeOptions] = useState(false); // Update #6 — collapsed by default
+  const [generatingInstantImage, setGeneratingInstantImage] = useState(false);
+  const [imageBridge, setImageBridge] = useState(null); // 'gemini' | 'chatgpt' | null
+  const [imageSource, setImageSource] = useState(null); // { label } once an image has been brought in
+
   const [error, setError] = useState('');
 
-  // Update #5 — the topic IS the prompt: generate a caption straight from it
-  // (no angle step needed), and offer a "polished" version with a few key
-  // words bolded, alongside the plain one.
-  const [topicResult, setTopicResult] = useState(null); // { plain, polished }
-  const [loadingTopicCaption, setLoadingTopicCaption] = useState(false);
-  const [captionVersion, setCaptionVersion] = useState('polished'); // 'plain' | 'polished'
-
-  const runGenerateFromTopic = async () => {
-    if (!topic.trim()) return;
+  const writeCaptionInstant = async () => {
+    if (!brief.trim()) return;
+    if (!geminiKey) {
+      setError('Add a free Gemini API key in Connect profile to use Instant, or write with ChatGPT/Gemini above instead.');
+      return;
+    }
     setError('');
-    setLoadingTopicCaption(true);
-    setTopicResult(null);
-    setIdeas([]);
-    setSelectedAngle(null);
-    setCaptionOptions([]);
+    setWritingInstant(true);
     try {
-      const result = await generateCaptionsFromTopic(topic, geminiKey, { tone, includeHashtags, emojiLevel });
-      setTopicResult(result);
-      setCaptionVersion('polished');
+      const result = await generateCaptionsFromTopic(brief, geminiKey, { tone, includeHashtags, emojiLevel });
       setCaption(applyMarkdownBold(result.polished || result.plain));
+      setCaptionSource({ label: 'Instant' });
     } catch (e) {
       setError(e.message);
     } finally {
-      setLoadingTopicCaption(false);
+      setWritingInstant(false);
     }
   };
 
-  const runSuggest = async () => {
-    if (!topic.trim()) return;
+  const handleCaptionBridgeCapture = ({ text, label }) => {
     setError('');
-    setLoadingIdeas(true);
-    setIdeas([]);
-    setSelectedAngle(null);
-    setCaptionOptions([]);
-    try {
-      const result = await suggestContentIdeas(topic, geminiKey);
-      setIdeas(result);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoadingIdeas(false);
-    }
+    setCaption(text);
+    setCaptionSource({ label });
   };
 
-  const runCaptions = async (angle) => {
-    setSelectedAngle(angle);
-    setError('');
-    setLoadingCaptions(true);
-    setCaptionOptions([]);
-    try {
-      const brief = `${topic} — angle: ${angle.title}. ${angle.description}`;
-      const result = await generateCaptions(brief, geminiKey, { tone, includeHashtags, emojiLevel });
-      setCaptionOptions(result);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoadingCaptions(false);
-    }
-  };
-
-  const runSuggestImagePrompt = async () => {
-    const context = caption.trim() || (selectedAngle ? `${topic} — ${selectedAngle.title}` : topic);
+  const suggestTheImagePrompt = async () => {
+    const context = caption.trim() || brief;
     if (!context.trim()) return;
     setError('');
     setSuggestingPrompt(true);
     try {
-      const p = await suggestImagePrompt(context, geminiKey);
-      if (p) setImagePrompt(p);
+      if (geminiKey) {
+        const p = await suggestImagePrompt(context, geminiKey);
+        if (p) setImagePrompt(p);
+      } else {
+        // No Gemini key for the suggestion call either — fall back to
+        // using the caption/brief itself as a reasonable starting prompt.
+        setImagePrompt(context.slice(0, 160));
+      }
     } catch (e) {
+      setImagePrompt(context.slice(0, 160));
       setError(e.message);
     } finally {
       setSuggestingPrompt(false);
     }
   };
 
-  const runImage = async () => {
+  // Once a caption exists, auto-suggest a matching image prompt so step 2
+  // is never a blank box staring back at the person.
+  useEffect(() => {
+    if (captionSource && !imagePrompt.trim()) {
+      suggestTheImagePrompt();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [captionSource]);
+
+  const generateInstantImage = async () => {
     if (!imagePrompt.trim()) return;
     setError('');
-    setLoadingImage(true);
+    setGeneratingInstantImage(true);
     try {
       const { base64, mimeType, provider, fallbackFrom } = await generateImageSmart(imagePrompt, {
-        provider: imageProvider,
+        provider: 'free',
         geminiKey,
         aspectRatio,
       });
       setImageBase64(base64);
       setImageDataUrl(`data:${mimeType};base64,${base64}`);
-      setImageProviderUsed({ provider, fallbackFrom });
+      setImageSource({ label: fallbackFrom ? `Instant (${provider})` : 'Instant' });
     } catch (e) {
       setError(e.message);
     } finally {
-      setLoadingImage(false);
+      setGeneratingInstantImage(false);
     }
   };
 
-  const handleBridgeCapture = ({ base64, mimeType, dataUrl, label }) => {
+  const handleImageBridgeCapture = ({ base64, mimeType, dataUrl, label }) => {
     setError('');
     setImageBase64(base64);
     setImageDataUrl(dataUrl || `data:${mimeType};base64,${base64}`);
-    setImageProviderUsed({ provider: 'web', label });
+    setImageSource({ label });
   };
 
   return (
     <>
+      {/* Step 1 — write the caption */}
       <div className="ai-block">
         <div className="field">
-          <label>1. What's the topic? (this is your prompt)</label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              value={topic}
-              onChange={(e) => setTopic(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && runGenerateFromTopic()}
-              placeholder="e.g. weekend cafe special, or a full sentence describing the post"
-            />
-            <button
-              className="btn btn-accent"
-              onClick={runGenerateFromTopic}
-              disabled={loadingTopicCaption || !topic.trim()}
-              title="Write the caption straight from this topic"
-            >
-              {loadingTopicCaption ? 'Writing…' : '✨ Generate caption'}
-            </button>
-          </div>
-          <p className="field-hint" style={{ marginTop: 6 }}>
-            Type exactly what you want the post to be about — it's used as the actual writing prompt, not just a
-            keyword. Or, use <button type="button" className="link-toggle" style={{ display: 'inline', padding: 0 }} onClick={runSuggest} disabled={loadingIdeas || !topic.trim()}>
-              {loadingIdeas ? 'thinking…' : 'a few angle ideas'}
-            </button> first if you'd rather pick a specific hook.
-          </p>
+          <label>1. What's the post about?</label>
+          <textarea
+            rows={3}
+            value={brief}
+            onChange={(e) => setBrief(e.target.value)}
+            placeholder="Describe the post — a topic, an offer, an update, a story… write as much or as little as you like."
+          />
         </div>
 
         <ToneControls
@@ -549,192 +522,152 @@ function QuickCreate({ geminiKey, caption, setCaption, imageDataUrl, setImageDat
           setIncludeHashtags={setIncludeHashtags}
         />
 
-        {topicResult && (
-          <div className="caption-options" style={{ marginTop: 12 }}>
-            <div className="guide-tabs ai-mode-tabs">
-              <button
-                className={`guide-tab-btn ${captionVersion === 'plain' ? 'guide-tab-btn-active' : ''}`}
-                onClick={() => {
-                  setCaptionVersion('plain');
-                  setCaption(topicResult.plain);
-                }}
-              >
-                Plain
-              </button>
-              <button
-                className={`guide-tab-btn ${captionVersion === 'polished' ? 'guide-tab-btn-active' : ''}`}
-                onClick={() => {
-                  setCaptionVersion('polished');
-                  setCaption(applyMarkdownBold(topicResult.polished || topicResult.plain));
-                }}
-              >
-                ✦ Polished (bold)
-              </button>
-              <button className="btn btn-ghost btn-sm" onClick={runGenerateFromTopic} disabled={loadingTopicCaption}>
-                🔁 Regenerate
-              </button>
-            </div>
-            <p className="field-hint" style={{ marginTop: 6 }}>
-              {captionVersion === 'polished'
-                ? 'A few key words are bolded with real Unicode bold characters, so they actually render bold on Facebook.'
-                : 'Plain version, no emphasis. Edit freely below either way.'}
-            </p>
+        <div className="field" style={{ marginTop: 10 }}>
+          <label>Write the caption with</label>
+          <div className="ai-provider-row">
+            <button
+              className="btn btn-ghost ai-provider-btn"
+              onClick={() => setCaptionBridge('chatgpt')}
+              disabled={!brief.trim()}
+            >
+              ⌘ ChatGPT
+            </button>
+            <button
+              className="btn btn-ghost ai-provider-btn"
+              onClick={() => setCaptionBridge('gemini')}
+              disabled={!brief.trim()}
+            >
+              ✦ Gemini
+            </button>
+            <button
+              className="btn btn-accent ai-provider-btn"
+              onClick={writeCaptionInstant}
+              disabled={!brief.trim() || writingInstant}
+              title={geminiKey ? 'Write instantly, without leaving this page' : 'Needs a free Gemini API key'}
+            >
+              {writingInstant ? 'Writing…' : '⚡ Instant'}
+            </button>
           </div>
+          <p className="field-hint" style={{ marginTop: 6 }}>
+            ChatGPT and Gemini open in a small docked window — you copy the caption it writes back in. Instant
+            writes it right here, using your free Gemini API key.
+          </p>
+        </div>
+
+        {captionBridge && (
+          <WebAiBridgeModal
+            provider={captionBridge}
+            prompt={buildCaptionBridgePrompt(brief, { tone, includeHashtags, emojiLevel })}
+            kind="text"
+            onCapture={handleCaptionBridgeCapture}
+            onClose={() => setCaptionBridge(null)}
+          />
         )}
 
-        {ideas.length > 0 && (
-          <div className="idea-grid">
-            {ideas.map((idea, i) => (
-              <button
-                key={i}
-                className={`idea-card ${selectedAngle?.title === idea.title ? 'idea-card-active' : ''}`}
-                onClick={() => runCaptions(idea)}
-              >
-                <div className="idea-card-title">
-                  {idea.title}
-                  {idea.trending && <span className="trend-badge">🔥 Trending</span>}
-                </div>
-                <div className="field-hint">{idea.description}</div>
-              </button>
-            ))}
+        {caption.trim() && (
+          <div className="field" style={{ marginTop: 12 }}>
+            <div className="caption-step-head">
+              <label className="field-label-standalone" style={{ marginBottom: 0 }}>
+                Caption {captionSource ? `— written with ${captionSource.label}` : ''}
+              </label>
+              {caption.trim() && (
+                <button className="btn btn-ghost btn-sm" onClick={() => onSaveText(caption)}>💾 Save</button>
+              )}
+            </div>
+            <CaptionField value={caption} onChange={setCaption} rows={5} />
           </div>
         )}
       </div>
 
-      {selectedAngle && (
+      {/* Step 2 — matching image, once there's a caption to match */}
+      {caption.trim() && (
         <div className="ai-block">
-          <div className="caption-step-head">
-            <label className="field-label-standalone" style={{ marginBottom: 0 }}>2. Pick a caption</label>
-            {!loadingCaptions && captionOptions.length > 0 && (
-              <button className="btn btn-ghost btn-sm" onClick={() => runCaptions(selectedAngle)}>🔁 Regenerate</button>
-            )}
-          </div>
-          {loadingCaptions ? (
-            <p className="field-hint">Writing trendy captions…</p>
-          ) : (
-            <div className="caption-options">
-              {captionOptions.map((c, i) => (
-                <div key={i} className={`caption-option ${caption === c ? 'caption-option-active' : ''}`}>
-                  <p style={{ whiteSpace: 'pre-wrap' }}>{c}</p>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="btn btn-primary btn-sm" onClick={() => setCaption(c)}>Use this</button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => onSaveText(c)}>💾 Save</button>
-                  </div>
-                </div>
-              ))}
+          <div className="field">
+            <label>2. Suggest & generate a matching image</label>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input
+                value={imagePrompt}
+                onChange={(e) => setImagePrompt(e.target.value)}
+                placeholder="Image prompt…"
+              />
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={suggestTheImagePrompt}
+                disabled={suggestingPrompt}
+                title="Suggest a prompt based on your caption"
+              >
+                {suggestingPrompt ? '…' : '✨ Re-suggest'}
+              </button>
             </div>
-          )}
-        </div>
-      )}
-
-      <div className="ai-block">
-        <div className="field">
-          <label>3. Generate an image (optional)</label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              value={imagePrompt}
-              onChange={(e) => setImagePrompt(e.target.value)}
-              placeholder="Describe the image you want…"
-            />
-            <button
-              className="btn btn-ghost"
-              onClick={runSuggestImagePrompt}
-              disabled={suggestingPrompt || (!caption.trim() && !topic.trim())}
-              title="Suggest a prompt based on your caption"
-            >
-              {suggestingPrompt ? '…' : '✨ Suggest'}
-            </button>
+            <p className="field-hint" style={{ marginTop: 6 }}>
+              Eye-catching, on-brand images get shared more — this prompt is built to pair with your caption above.
+              Edit it freely, then generate.
+            </p>
           </div>
-          <div className="image-gen-row">
-            <select value={imageProvider} onChange={(e) => setImageProvider(e.target.value)} title="Image AI provider">
-              {IMAGE_PROVIDER_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-            <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} title="Image shape">
+
+          <div className="field">
+            <select value={aspectRatio} onChange={(e) => setAspectRatio(e.target.value)} title="Image shape" style={{ maxWidth: 180 }}>
               {IMAGE_ASPECT_OPTIONS.map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
             </select>
-            <button className="btn btn-primary" onClick={runImage} disabled={loadingImage || !imagePrompt.trim()}>
-              {loadingImage ? 'Generating…' : imageDataUrl ? '🔁 Regenerate' : 'Generate'}
+          </div>
+
+          <div className="ai-provider-row">
+            <button
+              className="btn btn-ghost ai-provider-btn"
+              onClick={() => setImageBridge('chatgpt')}
+              disabled={!imagePrompt.trim()}
+            >
+              ⌘ ChatGPT
+            </button>
+            <button
+              className="btn btn-ghost ai-provider-btn"
+              onClick={() => setImageBridge('gemini')}
+              disabled={!imagePrompt.trim()}
+            >
+              ✦ Gemini
+            </button>
+            <button
+              className="btn btn-accent ai-provider-btn"
+              onClick={generateInstantImage}
+              disabled={!imagePrompt.trim() || generatingInstantImage}
+              title="Generate instantly with a free provider, no key needed"
+            >
+              {generatingInstantImage ? 'Generating…' : imageDataUrl ? '⚡ Regenerate' : '⚡ Instant'}
             </button>
           </div>
-        </div>
 
-        <div className="field" style={{ marginTop: 10 }}>
-          <button type="button" className="link-toggle" onClick={() => setShowBridgeOptions((v) => !v)}>
-            {showBridgeOptions ? 'Hide advanced option' : 'Advanced: bring in an image from Gemini / ChatGPT instead'}
-          </button>
-          {showBridgeOptions && (
-            <>
-              <p className="field-hint" style={{ marginTop: 6, marginBottom: 8 }}>
-                The Generate button above already creates images without ever leaving this page. This option is only
-                for when you specifically want Gemini's or ChatGPT's own web app quality — those sites block being
-                embedded directly (their own security setting, not something Social Manager can change), so they
-                open in a small docked window next to this one instead of a full new tab; you generate there, then
-                paste the image straight back in below.
-              </p>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setBridgeProvider('gemini')}
-                  disabled={!imagePrompt.trim()}
-                >
-                  ✦ Open Gemini
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setBridgeProvider('chatgpt')}
-                  disabled={!imagePrompt.trim()}
-                >
-                  ⌘ Open ChatGPT
-                </button>
-              </div>
-            </>
+          {imageBridge && (
+            <WebAiBridgeModal
+              provider={imageBridge}
+              prompt={imagePrompt}
+              kind="image"
+              onCapture={handleImageBridgeCapture}
+              onClose={() => setImageBridge(null)}
+            />
+          )}
+
+          {imageDataUrl && (
+            <div className="image-preview-row" style={{ marginTop: 10 }}>
+              <img src={imageDataUrl} alt="" className="image-preview-thumb" />
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => {
+                  setImageDataUrl(null);
+                  setImageBase64(null);
+                  setImageSource(null);
+                }}
+              >
+                Remove
+              </button>
+            </div>
+          )}
+          {imageSource && (
+            <p className="field-hint" style={{ marginTop: 6 }}>Brought in with {imageSource.label}.</p>
           )}
         </div>
-
-        {bridgeProvider && (
-          <WebAiBridgeModal
-            provider={bridgeProvider}
-            prompt={imagePrompt}
-            onCapture={handleBridgeCapture}
-            onClose={() => setBridgeProvider(null)}
-          />
-        )}
-        {imageDataUrl && (
-          <div className="image-preview-row">
-            <img src={imageDataUrl} alt="" className="image-preview-thumb" />
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => {
-                setImageDataUrl(null);
-                setImageBase64(null);
-                setImageProviderUsed(null);
-              }}
-            >
-              Remove
-            </button>
-          </div>
-        )}
-        {imageProviderUsed && (
-          <p className="field-hint" style={{ marginTop: 6 }}>
-            {imageProviderUsed.provider === 'web'
-              ? `Brought in from the ${imageProviderUsed.label} web app.`
-              : imageProviderUsed.provider === 'free'
-              ? imageProviderUsed.fallbackFrom
-                ? `Generated with the free provider — Gemini couldn't (${imageProviderUsed.fallbackFrom}).`
-                : 'Generated with the free provider (no API key needed).'
-              : 'Generated with Gemini.'}
-          </p>
-        )}
-      </div>
-
-      <div className="field">
-        <label>Final caption (edit freely)</label>
-        <CaptionField value={caption} onChange={setCaption} rows={4} />
-      </div>
+      )}
 
       {error && <div className="field-error">{error}</div>}
     </>

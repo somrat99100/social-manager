@@ -56,6 +56,15 @@ export async function updatePostStatus(uid, postId, newStatus) {
   });
 }
 
+/**
+ * Save engagement numbers (reactions/comments/shares) pulled from Facebook
+ * onto a post doc, so the broadcast log can show what's actually landing
+ * without re-fetching from Facebook every time it renders.
+ */
+export async function updatePostInsights(uid, postId, insights) {
+  await updateDoc(doc(db, 'users', uid, 'posts', postId), { insights });
+}
+
 export async function getPost(uid, postId) {
   const snap = await getDoc(doc(db, 'users', uid, 'posts', postId));
   return snap.exists() ? { id: snap.id, ...snap.data() } : null;

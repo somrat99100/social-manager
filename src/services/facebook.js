@@ -34,7 +34,7 @@ async function uploadUnpublishedPhoto(pageId, pageAccessToken, imageUrl) {
   form.append('access_token', pageAccessToken);
   const res = await fetch(`${GRAPH}/${pageId}/photos`, { method: 'POST', body: form });
   const data = await res.json();
-  if (data.error) throw new Error(`Image upload failed (${imageUrl.slice(0, 60)}…): ${data.error.message}`);
+  if (data.error) throw apiError(`Image upload failed (${imageUrl.slice(0, 60)}…): ${data.error.message}`);
   return data.id;
 }
 
@@ -66,7 +66,7 @@ export async function fetchPageInfo(pageId, pageAccessToken) {
     `${GRAPH}/${pageId}?fields=name,picture,fan_count&access_token=${encodeURIComponent(pageAccessToken)}`
   );
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
+  if (data.error) throw apiError(data.error.message);
   return {
     id: pageId,
     name: data.name,
@@ -115,6 +115,62 @@ export async function checkPostStatus(postId, pageAccessToken) {
 }
 
 /**
+ * Fetch engagement numbers for a published post — reactions, comments, and
+ * shares. This is what lets the broadcast log show what's actually
+ * landing, instead of posting into a void. Returns null (rather than
+ * throwing) on any failure, since a missing insight shouldn't block the
+ * rest of the log from rendering.
+ */
+export async function fetchPostInsights(postId, pageAccessToken) {
+  try {
+    const res = await fetch(
+      `${GRAPH}/${postId}?fields=reactions.summary(true).limit(0),comments.summary(true).limit(0),shares&access_token=${encodeURIComponent(pageAccessToken)}`
+    );
+    const data = await res.json();
+    if (data.error) return null;
+    return {
+      reactions: data.reactions?.summary?.total_count ?? 0,
+      comments: data.comments?.summary?.total_count ?? 0,
+      shares: data.shares?.count ?? 0,
+      fetchedAt: Date.now(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Retry a Graph API call a couple of times with a short backoff before
+ * giving up — covers the transient network blips / momentary 5xx's that
+ * otherwise surface as a confusing one-shot failure with no explanation.
+ * Does NOT retry on an error the API itself returned (bad token, bad
+ * request, etc.) — only on the fetch/call throwing, since a real API error
+ * will just fail the same way again.
+ */
+async function withRetry(fn, attempts = 3, delayMs = 800) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastErr = e;
+      // An error Facebook itself returned (bad token, bad request, etc.)
+      // is marked isApiError by the caller and fails immediately — retrying
+      // it would just produce the same answer, slower.
+      if (e.isApiError || i === attempts - 1) throw e;
+      await new Promise((r) => setTimeout(r, delayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+function apiError(message) {
+  const e = new Error(message);
+  e.isApiError = true;
+  return e;
+}
+
+/**
  * Publish a post to a Page. Text-only posts go to /feed; posts with an image
  * go to /photos so the image renders inline like a normal Facebook photo post.
  * `imageBase64` should be a raw base64 string (no data: prefix). `imageUrl` is
@@ -132,7 +188,7 @@ export async function checkPostStatus(postId, pageAccessToken) {
  * `imageUrls` are direct links to publicly hosted images — Facebook fetches
  * them server-side, so nothing needs to be downloaded into the browser first.
  */
-export async function publishToPage({ pageId, pageAccessToken, message, imageBase64, imageBlob, imageUrl, imageUrls }) {
+async function _publishToPage({ pageId, pageAccessToken, message, imageBase64, imageBlob, imageUrl, imageUrls }) {
   const urls = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
 
   if (urls.length > 1) {
@@ -150,7 +206,7 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
       }),
     });
     const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
+    if (data.error) throw apiError(data.error.message);
     return { id: data.id };
   }
 
@@ -171,7 +227,7 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
     form.append('access_token', pageAccessToken);
     const res = await fetch(`${GRAPH}/${pageId}/photos`, { method: 'POST', body: form });
     const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
+    if (data.error) throw apiError(data.error.message);
     return { id: data.post_id || data.id };
   }
   const res = await fetch(`${GRAPH}/${pageId}/feed`, {
@@ -180,7 +236,7 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
     body: JSON.stringify({ message, access_token: pageAccessToken }),
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
+  if (data.error) throw apiError(data.error.message);
   return { id: data.id };
 }
 
@@ -191,7 +247,7 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
  * for a single-photo post, or `imageUrls` (2+) for a multi-photo post —
  * scheduling works the same way for both, just with more photos attached.
  */
-export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl, imageUrls, imageBlob }) {
+async function _schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl, imageUrls, imageBlob }) {
   const urls = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
 
   if (urls.length > 1) {
@@ -211,7 +267,7 @@ export async function schedulePost({ pageId, pageAccessToken, message, publishTi
       }),
     });
     const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
+    if (data.error) throw apiError(data.error.message);
     return { id: data.id };
   }
 
@@ -228,7 +284,7 @@ export async function schedulePost({ pageId, pageAccessToken, message, publishTi
     form.append('access_token', pageAccessToken);
     const res = await fetch(`${GRAPH}/${pageId}/photos`, { method: 'POST', body: form });
     const data = await res.json();
-    if (data.error) throw new Error(data.error.message);
+    if (data.error) throw apiError(data.error.message);
     return { id: data.post_id || data.id };
   }
   const res = await fetch(`${GRAPH}/${pageId}/feed`, {
@@ -242,7 +298,7 @@ export async function schedulePost({ pageId, pageAccessToken, message, publishTi
     }),
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
+  if (data.error) throw apiError(data.error.message);
   return { id: data.id };
 }
 
@@ -251,4 +307,18 @@ function base64ToBlob(base64, mime) {
   const arr = new Uint8Array(bytes.length);
   for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
   return new Blob([arr], { type: mime });
+}
+
+/**
+ * Public entry points — wrap the actual publish/schedule work in a short
+ * retry with backoff, so a momentary network blip or Facebook 5xx doesn't
+ * surface as a one-shot, unexplained failure. An error the API itself
+ * returned (bad token, bad request) still fails immediately — retrying
+ * that would just get the same answer three times slower.
+ */
+export function publishToPage(args) {
+  return withRetry(() => _publishToPage(args));
+}
+export function schedulePost(args) {
+  return withRetry(() => _schedulePost(args));
 }

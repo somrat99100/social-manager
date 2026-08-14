@@ -542,9 +542,12 @@ export default function SheetImport() {
 
       {fb && (
         <div className="card page-card">
-          <div className="settings-block-head">
-            <h3>Sheet</h3>
-            <TallyDot status={rows.length > 0 ? 'live' : 'idle'} />
+          <div className="section-step-head">
+            <span className="section-step-num">1</span>
+            <div className="settings-block-head" style={{ flex: 1 }}>
+              <h3>Sheet</h3>
+              <TallyDot status={rows.length > 0 ? 'live' : 'idle'} />
+            </div>
           </div>
           <p className="field-hint" style={{ margin: '6px 0 14px' }}>
             Share the sheet as <strong>Anyone with the link — Viewer</strong>, then paste its link below. Put a
@@ -632,8 +635,11 @@ export default function SheetImport() {
       {fb && rows.length > 0 && (
         <>
           <div className="card page-card">
-            <div className="settings-block-head">
-              <h3>Posting schedule</h3>
+            <div className="section-step-head">
+              <span className="section-step-num">2</span>
+              <div className="settings-block-head" style={{ flex: 1 }}>
+                <h3>Posting schedule</h3>
+              </div>
             </div>
             <div className="schedule-settings-grid">
               <div className="field">
@@ -671,11 +677,14 @@ export default function SheetImport() {
           </div>
 
           <div className="card page-card">
-            <div className="settings-block-head">
-              <h3>
-                Rows found ({rows.length}) · {includedRows.length} queued
-              </h3>
-              {cycle > 1 && <span className="badge badge-idle">Loop {cycle}</span>}
+            <div className="section-step-head">
+              <span className="section-step-num">3</span>
+              <div className="settings-block-head" style={{ flex: 1 }}>
+                <h3>
+                  Rows found ({rows.length}) · {includedRows.length} queued
+                </h3>
+                {cycle > 1 && <span className="badge badge-idle">Loop {cycle}</span>}
+              </div>
             </div>
             <p className="field-hint" style={{ margin: '6px 0 4px' }}>
               Drag ⋮⋮ to reorder (changes posting order) · uncheck to skip · ✕ to delete for good — a deleted row

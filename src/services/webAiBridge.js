@@ -46,16 +46,20 @@ function popupFeatures() {
 }
 
 /**
- * Open ChatGPT in a compact popup window with the image prompt pre-filled
- * in the composer. Also copies the prompt to the clipboard as a fallback in
- * case the ?q= prefill ever stops working (it's not an official API).
+ * Open ChatGPT in a compact popup window with a prompt pre-filled in the
+ * composer. Also copies the prompt to the clipboard as a fallback in case
+ * the ?q= prefill ever stops working (it's not an official API).
  * Returns the window handle so the caller can focus/close/watch it.
+ *
+ * `kind` controls the wording sent to the model: 'image' asks for an image,
+ * 'text' sends the prompt as-is (used for caption writing).
  */
-export async function openInChatGPT(prompt) {
+export async function openInChatGPT(prompt, kind = 'image') {
   const text = (prompt || '').trim();
-  if (!text) throw new Error('Describe the image you want first.');
-  await copyToClipboard(`Generate an image: ${text}`);
-  const url = `${CHATGPT_URL}?q=${encodeURIComponent(`Generate an image: ${text}`)}`;
+  if (!text) throw new Error(kind === 'image' ? 'Describe the image you want first.' : 'Add a brief first.');
+  const fullPrompt = kind === 'image' ? `Generate an image: ${text}` : text;
+  await copyToClipboard(fullPrompt);
+  const url = `${CHATGPT_URL}?q=${encodeURIComponent(fullPrompt)}`;
   const win = window.open(url, PROVIDER_INFO.chatgpt.windowName, popupFeatures());
   win?.focus();
   return { window: win };
@@ -67,10 +71,11 @@ export async function openInChatGPT(prompt) {
  * the user pastes it in). Returns the window handle plus whether the copy
  * succeeded, so the UI can show the right instructions.
  */
-export async function openInGemini(prompt) {
+export async function openInGemini(prompt, kind = 'image') {
   const text = (prompt || '').trim();
-  if (!text) throw new Error('Describe the image you want first.');
-  const copied = await copyToClipboard(`Generate an image: ${text}`);
+  if (!text) throw new Error(kind === 'image' ? 'Describe the image you want first.' : 'Add a brief first.');
+  const fullPrompt = kind === 'image' ? `Generate an image: ${text}` : text;
+  const copied = await copyToClipboard(fullPrompt);
   const win = window.open(GEMINI_URL, PROVIDER_INFO.gemini.windowName, popupFeatures());
   win?.focus();
   return { window: win, copied };
@@ -107,6 +112,16 @@ export function readImageFromPasteEvent(e) {
     }
   }
   return null;
+}
+
+/**
+ * Pull plain text the user copied from the ChatGPT/Gemini window (the
+ * caption it wrote) out of a paste event. Returns the trimmed string, or ''
+ * if the clipboard had no usable text.
+ */
+export function readTextFromPasteEvent(e) {
+  const text = e.clipboardData?.getData('text/plain');
+  return (text || '').trim();
 }
 
 export function fileToBase64(file) {

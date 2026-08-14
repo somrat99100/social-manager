@@ -1,8 +1,10 @@
 import { useState } from 'react';
+import { checkEngagementBait } from '../lib/engagement-bait';
 
 export default function PostPreviewModal({ page, caption, imageDataUrl, onClose, onPost, onSaveDraft }) {
   const [posting, setPosting] = useState(false);
   const [error, setError] = useState('');
+  const baitWarning = checkEngagementBait(caption);
 
   const handlePost = async () => {
     setError('');
@@ -49,6 +51,7 @@ export default function PostPreviewModal({ page, caption, imageDataUrl, onClose,
           </div>
         </div>
 
+        {baitWarning && <div className="field-warning" style={{ marginTop: 12 }}>⚠ {baitWarning}</div>}
         {error && <div className="field-error" style={{ marginTop: 12 }}>{error}</div>}
 
         <div className="modal-footer">

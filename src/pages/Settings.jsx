@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/auth-context';
-import { fetchManagedPages, exchangeForLongLivedToken } from '../services/facebook';
+import { fetchManagedPages, exchangeForLongLivedToken, fetchPageInfo } from '../services/facebook';
 import {
   requestAuthorizationCode,
   exchangeCodeForTokens,
@@ -22,7 +22,13 @@ export default function Settings() {
   const [foundPages, setFoundPages] = useState([]);
   const [loadingPages, setLoadingPages] = useState(false);
   const [fbError, setFbError] = useState('');
-  const [showFbGuide, setShowFbGuide] = useState(false);
+  // Opens by default for a brand-new setup (nothing connected, no app
+  // credentials saved yet) so the instructions are the first thing seen —
+  // instead of a person with an empty page having to go hunting for
+  // "how do I get a token?" themselves.
+  const [showFbGuide, setShowFbGuide] = useState(
+    connectedPages.length === 0 && (profile?.fbAppId ? false : true) && !(profile?.fbUserTokens?.length)
+  );
   const [showConnectForm, setShowConnectForm] = useState(false);
 
   // Update #9 — support saving MORE THAN ONE Facebook token (e.g. one per
@@ -399,6 +405,7 @@ export default function Settings() {
 
   const connectPage = async (page) => {
     try {
+      const existing = connectedPages.find((p) => p.pageId === page.id);
       const next = connectedPages.filter((p) => p.pageId !== page.id);
       next.push({
         pageId: page.id,
@@ -406,7 +413,11 @@ export default function Settings() {
         name: page.name,
         avatar: page.avatar,
         fanCount: page.fanCount,
-        connectedAt: Date.now(),
+        // Kept fixed from first connection so the follower count shown
+        // elsewhere can be compared against a real baseline, instead of
+        // just showing today's number with nothing to measure it against.
+        startFanCount: existing?.startFanCount ?? page.fanCount,
+        connectedAt: existing?.connectedAt ?? Date.now(),
       });
       await updateProfile({ pages: next });
       setFoundPages((prev) => prev.filter((p) => p.id !== page.id));
@@ -415,6 +426,23 @@ export default function Settings() {
     } catch (e) {
       console.error('Failed to save connected page:', e);
       setFbError('Could not save that connection. Please try again.');
+    }
+  };
+
+  const [refreshingPageId, setRefreshingPageId] = useState(null);
+
+  const refreshPageInfo = async (fb) => {
+    setRefreshingPageId(fb.pageId);
+    try {
+      const info = await fetchPageInfo(fb.pageId, fb.pageAccessToken);
+      const next = connectedPages.map((p) =>
+        p.pageId === fb.pageId ? { ...p, name: info.name, avatar: info.avatar || p.avatar, fanCount: info.fanCount } : p
+      );
+      await updateProfile({ pages: next });
+    } catch (e) {
+      setFbError(`Could not refresh "${fb.name}": ${e.message}`);
+    } finally {
+      setRefreshingPageId(null);
     }
   };
 
@@ -607,20 +635,36 @@ export default function Settings() {
 
         {connectedPages.length > 0 && (
           <div className="page-pick-list" style={{ marginTop: 12 }}>
-            {connectedPages.map((fb) => (
-              <div key={fb.pageId} className="channel-card">
-                <img src={fb.avatar} alt="" className="channel-card-avatar" />
-                <div className="channel-card-info">
-                  <div className="channel-card-name">{fb.name}</div>
-                  <div className="field-hint mono">
-                    {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Connected'}
+            {connectedPages.map((fb) => {
+              const delta = fb.fanCount != null && fb.startFanCount != null ? fb.fanCount - fb.startFanCount : null;
+              return (
+                <div key={fb.pageId} className="channel-card">
+                  <img src={fb.avatar} alt="" className="channel-card-avatar" />
+                  <div className="channel-card-info">
+                    <div className="channel-card-name">{fb.name}</div>
+                    <div className="field-hint mono">
+                      {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Connected'}
+                      {delta != null && delta !== 0 && (
+                        <span style={{ color: delta > 0 ? 'var(--ok)' : 'var(--live)' }}>
+                          {' '}{delta > 0 ? '▲' : '▼'} {Math.abs(delta).toLocaleString()} since connecting
+                        </span>
+                      )}
+                    </div>
                   </div>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => refreshPageInfo(fb)}
+                    disabled={refreshingPageId === fb.pageId}
+                    title="Refresh follower count"
+                  >
+                    {refreshingPageId === fb.pageId ? '…' : '↻'}
+                  </button>
+                  <button className="btn btn-danger btn-sm" onClick={() => disconnectPage(fb.pageId)}>
+                    Disconnect
+                  </button>
                 </div>
-                <button className="btn btn-danger btn-sm" onClick={() => disconnectPage(fb.pageId)}>
-                  Disconnect
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
