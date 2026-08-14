@@ -1,9 +1,15 @@
 import { useState } from 'react';
 import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
+import { usePostStatusSync } from '../lib/use-post-status-sync';
 
 export default function ProtectedLayout() {
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // Update #10 — keeps the broadcast log's "scheduled → posted" status in
+  // sync globally, for as long as the person is signed in, not just while
+  // they're looking at the Log page.
+  usePostStatusSync();
 
   return (
     <div className="app-shell">

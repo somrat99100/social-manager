@@ -7,8 +7,15 @@ import { toUnicodeBold, toPlainFromBold, isFullyBold } from '../lib/text-format'
  * clicking again on the same selection undoes it. This is a drop-in
  * replacement for a plain <textarea value={} onChange={}>.
  */
+// Facebook doesn't hard-cut captions until ~63,206 chars, but posts read
+// noticeably better (and get better reach) kept well under this — used
+// purely as a soft, informational guide, never a hard limit.
+const RECOMMENDED_LENGTH = 500;
+
 export default function CaptionField({ value, onChange, rows = 4, placeholder, label }) {
   const ref = useRef(null);
+  const length = value?.length || 0;
+  const overRecommended = length > RECOMMENDED_LENGTH;
 
   const applyBold = () => {
     const el = ref.current;
@@ -47,6 +54,9 @@ export default function CaptionField({ value, onChange, rows = 4, placeholder, l
           B
         </button>
         <span className="field-hint caption-toolbar-hint">Select text, then click B to bold it</span>
+        <span className={`caption-char-count ${overRecommended ? 'caption-char-count-over' : ''}`}>
+          {length.toLocaleString()}{overRecommended ? ` · long for a single post` : ''}
+        </span>
       </div>
       <textarea
         ref={ref}

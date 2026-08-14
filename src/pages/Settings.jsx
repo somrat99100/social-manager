@@ -1,7 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../context/auth-context';
 import { fetchManagedPages } from '../services/facebook';
 import TallyDot from '../components/tally-dot';
+
+function genId() {
+  return `tok_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export default function Settings() {
   const { profile, updateProfile } = useAuth();
@@ -14,11 +18,37 @@ export default function Settings() {
   const [showFbGuide, setShowFbGuide] = useState(false);
   const [showConnectForm, setShowConnectForm] = useState(false);
 
-  // Update #2 — keep the pasted token permanently so pages can be
-  // re-fetched/reconnected later without pasting it in again.
-  const [showTokenSaveForm, setShowTokenSaveForm] = useState(false);
-  const [tokenJustSaved, setTokenJustSaved] = useState(false);
-  const savedUserToken = profile?.fbUserToken || '';
+  // Update #9 — support saving MORE THAN ONE Facebook token (e.g. one per
+  // Facebook app/account you manage Pages with). Each saved token remembers
+  // which Pages it grants access to, so refreshing/updating a token can
+  // reconnect every one of its Pages in a single click, instead of having
+  // to hunt them down and click "Reconnect" on each one individually.
+  const savedTokens = profile?.fbUserTokens || [];
+  const [showAddTokenForm, setShowAddTokenForm] = useState(false);
+  const [newTokenLabel, setNewTokenLabel] = useState('');
+  const [newTokenValue, setNewTokenValue] = useState('');
+  const [savingToken, setSavingToken] = useState(false);
+  const [tokenActionError, setTokenActionError] = useState('');
+  const [reconnectingId, setReconnectingId] = useState(null);
+  const [reconnectResult, setReconnectResult] = useState(null); // { id, count }
+
+  // One-time migration: fold the old single `fbUserToken` field into the
+  // new `fbUserTokens` list, so anyone upgrading from before this update
+  // doesn't lose their saved token.
+  useEffect(() => {
+    if (!profile) return;
+    if (profile.fbUserToken && (!profile.fbUserTokens || profile.fbUserTokens.length === 0)) {
+      const migrated = [{
+        id: genId(),
+        label: 'Facebook token',
+        token: profile.fbUserToken,
+        pageIds: connectedPages.map((p) => p.pageId),
+        savedAt: Date.now(),
+      }];
+      updateProfile({ fbUserTokens: migrated, fbUserToken: '' }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
 
   const [geminiKey, setGeminiKey] = useState(profile?.geminiApiKey || '');
   const [geminiSaved, setGeminiSaved] = useState(false);
@@ -31,6 +61,27 @@ export default function Settings() {
   const [driveError, setDriveError] = useState('');
   const [showDriveGuide, setShowDriveGuide] = useState(false);
 
+  // Upserts a batch of Facebook-fetched pages into the connected pages list
+  // (matched by pageId) without touching any other connected pages.
+  const mergePagesIntoProfile = async (fbPages) => {
+    const next = [...connectedPages];
+    for (const p of fbPages) {
+      const idx = next.findIndex((c) => c.pageId === p.id);
+      const entry = {
+        pageId: p.id,
+        pageAccessToken: p.accessToken,
+        name: p.name,
+        avatar: p.avatar,
+        fanCount: p.fanCount,
+        connectedAt: idx === -1 ? Date.now() : next[idx].connectedAt,
+      };
+      if (idx === -1) next.push(entry);
+      else next[idx] = entry;
+    }
+    await updateProfile({ pages: next });
+    return next;
+  };
+
   const findPages = async (tokenOverride) => {
     const token = (tokenOverride ?? userToken).trim();
     if (!token) return;
@@ -41,12 +92,6 @@ export default function Settings() {
       const result = await fetchManagedPages(token);
       if (result.length === 0) setFbError('That token worked, but no Pages were found for it.');
       setFoundPages(result);
-      // Automatically keep this token on file so "Refresh pages" works later
-      // without asking for it again — this is what makes the connection
-      // permanent instead of a one-time paste.
-      if (result.length > 0 && token !== savedUserToken) {
-        updateProfile({ fbUserToken: token }).catch(() => {});
-      }
     } catch (e) {
       setFbError(e.message);
     } finally {
@@ -54,29 +99,107 @@ export default function Settings() {
     }
   };
 
-  const saveTokenOnly = async () => {
-    if (!userToken.trim()) return;
+  // Update #9 — save a NEW token to the list (doesn't touch any other saved
+  // token) and immediately connect every Page it grants access to, in one
+  // step — no need to click "Connect" once per Page.
+  const addToken = async () => {
+    const token = newTokenValue.trim();
+    if (!token) return;
+    setTokenActionError('');
+    setSavingToken(true);
     try {
-      await updateProfile({ fbUserToken: userToken.trim() });
-      setTokenJustSaved(true);
-      setTimeout(() => setTokenJustSaved(false), 2000);
+      const result = await fetchManagedPages(token);
+      if (result.length === 0) {
+        setTokenActionError('That token worked, but no Pages were found for it.');
+        return;
+      }
+      await mergePagesIntoProfile(result);
+      const entry = {
+        id: genId(),
+        label: newTokenLabel.trim() || `Token ${savedTokens.length + 1}`,
+        token,
+        pageIds: result.map((p) => p.id),
+        savedAt: Date.now(),
+      };
+      await updateProfile({ fbUserTokens: [...savedTokens, entry] });
+      setNewTokenLabel('');
+      setNewTokenValue('');
+      setShowAddTokenForm(false);
+      setReconnectResult({ id: entry.id, count: result.length });
+      setTimeout(() => setReconnectResult(null), 3500);
     } catch (e) {
-      console.error('Failed to save Facebook token:', e);
-      setFbError('Could not save the token. Please try again.');
+      setTokenActionError(e.message);
+    } finally {
+      setSavingToken(false);
     }
   };
 
-  const refreshWithSavedToken = () => {
-    if (!savedUserToken) return;
-    findPages(savedUserToken);
+  // Update #9 — the core ask: after a token is refreshed/updated, every Page
+  // that token manages reconnects in one click, instead of reconnecting
+  // Pages one at a time.
+  const reconnectAllForToken = async (tokenEntry) => {
+    setTokenActionError('');
+    setReconnectingId(tokenEntry.id);
+    try {
+      const result = await fetchManagedPages(tokenEntry.token);
+      if (result.length === 0) {
+        setTokenActionError(`"${tokenEntry.label}" didn't return any Pages — it may have expired. Update it below.`);
+        return;
+      }
+      await mergePagesIntoProfile(result);
+      // Keep this token's known page list current, in case Pages were
+      // added/removed on the Facebook side since it was last used.
+      const nextTokens = savedTokens.map((t) =>
+        t.id === tokenEntry.id ? { ...t, pageIds: result.map((p) => p.id) } : t
+      );
+      await updateProfile({ fbUserTokens: nextTokens });
+      setReconnectResult({ id: tokenEntry.id, count: result.length });
+      setTimeout(() => setReconnectResult(null), 3500);
+    } catch (e) {
+      setTokenActionError(`Could not refresh "${tokenEntry.label}": ${e.message}`);
+    } finally {
+      setReconnectingId(null);
+    }
   };
 
-  const clearSavedToken = async () => {
-    if (!confirm("Remove the saved token? You'll need to paste it again to reconnect or refresh pages.")) return;
+  const [editingTokenId, setEditingTokenId] = useState(null);
+  const [editingTokenValue, setEditingTokenValue] = useState('');
+
+  // Update the raw token string for an existing saved entry (e.g. after
+  // Facebook expires it) and immediately reconnect all of its Pages.
+  const updateTokenValue = async (tokenEntry) => {
+    const token = editingTokenValue.trim();
+    if (!token) return;
+    setTokenActionError('');
+    setReconnectingId(tokenEntry.id);
     try {
-      await updateProfile({ fbUserToken: '' });
+      const result = await fetchManagedPages(token);
+      if (result.length === 0) {
+        setTokenActionError('That token worked, but no Pages were found for it.');
+        return;
+      }
+      await mergePagesIntoProfile(result);
+      const nextTokens = savedTokens.map((t) =>
+        t.id === tokenEntry.id ? { ...t, token, pageIds: result.map((p) => p.id) } : t
+      );
+      await updateProfile({ fbUserTokens: nextTokens });
+      setEditingTokenId(null);
+      setEditingTokenValue('');
+      setReconnectResult({ id: tokenEntry.id, count: result.length });
+      setTimeout(() => setReconnectResult(null), 3500);
     } catch (e) {
-      console.error('Failed to clear saved token:', e);
+      setTokenActionError(e.message);
+    } finally {
+      setReconnectingId(null);
+    }
+  };
+
+  const removeToken = async (tokenEntry) => {
+    if (!confirm(`Remove "${tokenEntry.label}"? Its Pages will stay connected until they're manually disconnected — you just won't be able to one-click reconnect them with this token anymore.`)) return;
+    try {
+      await updateProfile({ fbUserTokens: savedTokens.filter((t) => t.id !== tokenEntry.id) });
+    } catch (e) {
+      console.error('Failed to remove token:', e);
     }
   };
 
@@ -98,6 +221,36 @@ export default function Settings() {
     } catch (e) {
       console.error('Failed to save connected page:', e);
       setFbError('Could not save that connection. Please try again.');
+    }
+  };
+
+  // One click to connect every Page found for the token currently pasted
+  // into the "Add another page" form above, instead of one click per Page.
+  const connectAllFoundPages = async () => {
+    if (foundPages.length === 0) return;
+    setFbError('');
+    try {
+      await mergePagesIntoProfile(foundPages);
+      const token = userToken.trim();
+      if (token) {
+        const alreadySaved = savedTokens.some((t) => t.token === token);
+        if (!alreadySaved) {
+          const entry = {
+            id: genId(),
+            label: `Token ${savedTokens.length + 1}`,
+            token,
+            pageIds: foundPages.map((p) => p.id),
+            savedAt: Date.now(),
+          };
+          await updateProfile({ fbUserTokens: [...savedTokens, entry] });
+        }
+      }
+      setFoundPages([]);
+      setUserToken('');
+      setShowConnectForm(false);
+    } catch (e) {
+      console.error('Failed to connect pages:', e);
+      setFbError('Could not save those connections. Please try again.');
     }
   };
 
@@ -184,32 +337,39 @@ export default function Settings() {
                 </button>
               </div>
               <p className="field-hint" style={{ marginTop: 6 }}>
-                This token is saved automatically once it works, so you won't need to paste it again — use
-                "Refresh pages" below any time.
+                This token gets saved once it works, so you won't need to paste it again — reconnect or refresh its
+                Pages from the "Saved tokens" list below any time.
               </p>
               {fbError && <div className="field-error">{fbError}</div>}
             </div>
 
             {foundPages.length > 0 && (
-              <div className="page-pick-list">
-                {foundPages.map((p) => {
-                  const alreadyConnected = connectedPages.some((c) => c.pageId === p.id);
-                  return (
-                    <div key={p.id} className="page-pick-row">
-                      <img src={p.avatar} alt="" className="channel-card-avatar" />
-                      <div className="channel-card-info">
-                        <div className="channel-card-name">{p.name}</div>
-                        <div className="field-hint mono">
-                          {p.fanCount != null ? `${p.fanCount.toLocaleString()} followers` : ''}
+              <>
+                <div className="page-pick-list">
+                  {foundPages.map((p) => {
+                    const alreadyConnected = connectedPages.some((c) => c.pageId === p.id);
+                    return (
+                      <div key={p.id} className="page-pick-row">
+                        <img src={p.avatar} alt="" className="channel-card-avatar" />
+                        <div className="channel-card-info">
+                          <div className="channel-card-name">{p.name}</div>
+                          <div className="field-hint mono">
+                            {p.fanCount != null ? `${p.fanCount.toLocaleString()} followers` : ''}
+                          </div>
                         </div>
+                        <button className="btn btn-accent btn-sm" onClick={() => connectPage(p)}>
+                          {alreadyConnected ? 'Reconnect' : 'Connect'}
+                        </button>
                       </div>
-                      <button className="btn btn-accent btn-sm" onClick={() => connectPage(p)}>
-                        {alreadyConnected ? 'Reconnect' : 'Connect'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+                {foundPages.length > 1 && (
+                  <button className="btn btn-primary btn-sm" style={{ marginTop: 10 }} onClick={connectAllFoundPages}>
+                    ⚡ Connect all {foundPages.length} pages at once
+                  </button>
+                )}
+              </>
             )}
 
             {connectedPages.length > 0 && (
@@ -232,55 +392,119 @@ export default function Settings() {
           </button>
         )}
 
-        {/* Update #2 — permanent token storage */}
+        {/* Update #9 — multiple saved tokens, each one-click reconnectable */}
         <div style={{ marginTop: 18, paddingTop: 16, borderTop: '1px solid var(--line)' }}>
           <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span>Saved access token</span>
-            {savedUserToken && <span className="badge badge-ok">Stored</span>}
+            <span>Saved tokens {savedTokens.length > 0 ? `(${savedTokens.length})` : ''}</span>
           </label>
-          {savedUserToken ? (
-            <>
-              <div
-                className="field-hint mono"
-                style={{ background: 'var(--bg-2)', padding: 10, borderRadius: 6, marginTop: 8, wordBreak: 'break-all' }}
-              >
-                {savedUserToken.slice(0, 24)}…{savedUserToken.slice(-8)}
-              </div>
-              <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
-                <button className="btn btn-primary btn-sm" onClick={refreshWithSavedToken} disabled={loadingPages}>
-                  {loadingPages ? 'Refreshing…' : '↻ Refresh pages with saved token'}
-                </button>
-                <button className="btn btn-danger btn-sm" onClick={clearSavedToken}>Remove saved token</button>
-              </div>
-              <p className="field-hint" style={{ marginTop: 8 }}>
-                Social Manager keeps this token on file so you never have to paste it in again — reconnecting or
-                refreshing pages later is one click.
-              </p>
-            </>
-          ) : (
-            <>
-              {!showTokenSaveForm ? (
-                <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => setShowTokenSaveForm(true)}>
-                  + Save a token for future use
-                </button>
-              ) : (
-                <div style={{ marginTop: 8 }}>
-                  <textarea
-                    value={userToken}
-                    onChange={(e) => setUserToken(e.target.value)}
-                    placeholder="Paste your Facebook token here to store it"
-                    style={{ minHeight: 60, fontFamily: 'monospace', fontSize: 12 }}
-                  />
-                  <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-                    <button className="btn btn-primary btn-sm" onClick={saveTokenOnly} disabled={!userToken.trim()}>
-                      {tokenJustSaved ? 'Saved ✓' : 'Save token'}
-                    </button>
-                    <button className="btn btn-ghost btn-sm" onClick={() => setShowTokenSaveForm(false)}>Cancel</button>
+          <p className="field-hint" style={{ margin: '4px 0 10px' }}>
+            Save more than one token — handy if different Pages come through different Facebook apps or accounts.
+            Updating a token and clicking "Reconnect all pages" refreshes every Page it manages in one click.
+          </p>
+
+          {savedTokens.length > 0 && (
+            <div className="token-list">
+              {savedTokens.map((t) => {
+                const isEditing = editingTokenId === t.id;
+                const isBusy = reconnectingId === t.id;
+                const justDone = reconnectResult?.id === t.id;
+                const tokenPageCount = t.pageIds?.length || 0;
+                return (
+                  <div key={t.id} className="token-row">
+                    <div className="token-row-top">
+                      <span className="token-row-label">{t.label}</span>
+                      <span className="badge badge-ok">
+                        {tokenPageCount} page{tokenPageCount === 1 ? '' : 's'}
+                      </span>
+                    </div>
+                    <div className="field-hint mono token-row-value">
+                      {t.token.slice(0, 20)}…{t.token.slice(-8)}
+                    </div>
+                    {isEditing ? (
+                      <div style={{ marginTop: 8 }}>
+                        <textarea
+                          value={editingTokenValue}
+                          onChange={(e) => setEditingTokenValue(e.target.value)}
+                          placeholder="Paste the updated token"
+                          style={{ minHeight: 56, fontFamily: 'monospace', fontSize: 12 }}
+                        />
+                        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                          <button
+                            className="btn btn-primary btn-sm"
+                            onClick={() => updateTokenValue(t)}
+                            disabled={isBusy || !editingTokenValue.trim()}
+                          >
+                            {isBusy ? 'Updating…' : 'Update & reconnect all pages'}
+                          </button>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => { setEditingTokenId(null); setEditingTokenValue(''); }}
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                        <button
+                          className="btn btn-primary btn-sm"
+                          onClick={() => reconnectAllForToken(t)}
+                          disabled={isBusy}
+                        >
+                          {isBusy ? 'Reconnecting…' : justDone ? `✓ Reconnected ${reconnectResult.count}` : '↻ Reconnect all pages'}
+                        </button>
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => { setEditingTokenId(t.id); setEditingTokenValue(t.token); }}
+                        >
+                          Update token
+                        </button>
+                        <button className="btn btn-danger btn-sm" onClick={() => removeToken(t)}>Remove</button>
+                      </div>
+                    )}
                   </div>
-                </div>
-              )}
-            </>
+                );
+              })}
+            </div>
           )}
+
+          {!showAddTokenForm ? (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: savedTokens.length > 0 ? 12 : 0 }} onClick={() => setShowAddTokenForm(true)}>
+              + Save a{savedTokens.length > 0 ? 'nother' : ''} token
+            </button>
+          ) : (
+            <div style={{ marginTop: 10 }}>
+              <div className="field">
+                <label>Label (optional)</label>
+                <input
+                  value={newTokenLabel}
+                  onChange={(e) => setNewTokenLabel(e.target.value)}
+                  placeholder="e.g. Agriculture app"
+                />
+              </div>
+              <div className="field">
+                <label>Facebook token</label>
+                <textarea
+                  value={newTokenValue}
+                  onChange={(e) => setNewTokenValue(e.target.value)}
+                  placeholder="Paste the token here"
+                  style={{ minHeight: 56, fontFamily: 'monospace', fontSize: 12 }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary btn-sm" onClick={addToken} disabled={savingToken || !newTokenValue.trim()}>
+                  {savingToken ? 'Saving…' : 'Save & connect its pages'}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => { setShowAddTokenForm(false); setNewTokenLabel(''); setNewTokenValue(''); setTokenActionError(''); }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {tokenActionError && <div className="field-error" style={{ marginTop: 8 }}>{tokenActionError}</div>}
         </div>
 
         <button className="link-toggle" onClick={() => setShowFbGuide((v) => !v)}>

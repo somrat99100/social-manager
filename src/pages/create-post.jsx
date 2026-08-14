@@ -136,7 +136,16 @@ export default function CreatePost() {
       <div className="page-head">
         <div>
           <h1>Create post</h1>
-          <p className="field-hint">{fb ? `Publishing to ${fb.name}` : 'Connect a page to publish'}</p>
+          <p className="field-hint">
+            {fb ? (
+              <span className="publishing-to-chip">
+                {fb.avatar && <img src={fb.avatar} alt="" className="publishing-to-avatar" />}
+                Publishing to <strong>{fb.name}</strong>
+              </span>
+            ) : (
+              'Connect a page to publish'
+            )}
+          </p>
         </div>
         {pages.length > 1 && (
           <select
@@ -232,7 +241,7 @@ export default function CreatePost() {
 
         <div className="composer-side">
           <div className="card side-preview">
-            <div className="field-hint" style={{ marginBottom: 10, fontWeight: 600 }}>Live preview</div>
+            <div className="side-preview-label">Live preview</div>
             <div className="fb-preview fb-preview-compact">
               <div className="fb-preview-head">
                 <img
@@ -284,7 +293,10 @@ function ManualComposer({ caption, setCaption, imageDataUrl, onFileChange, fileR
             <button className="btn btn-ghost btn-sm" onClick={onClearImage}>Remove</button>
           </div>
         ) : (
-          <button className="btn btn-ghost" onClick={() => fileRef.current?.click()}>+ Add photo</button>
+          <button className="btn btn-ghost photo-drop-btn" onClick={() => fileRef.current?.click()}>
+            <span className="photo-drop-icon">🖼</span>
+            <span>+ Add photo</span>
+          </button>
         )}
         <input ref={fileRef} type="file" accept="image/*" onChange={onFileChange} style={{ display: 'none' }} />
       </div>

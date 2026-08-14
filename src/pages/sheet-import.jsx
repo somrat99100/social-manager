@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
 import { publishToPage, schedulePost } from '../services/facebook';
@@ -37,8 +37,12 @@ export default function SheetImport() {
 
   const [sheetInput, setSheetInput] = useState(saved.input || '');
   const [sheetName, setSheetName] = useState(saved.sheetName || '');
-  const [sheetId, setSheetId] = useState(null);
-  const [rows, setRows] = useState([]);
+  // Update #8 — the fetched rows (and their per-row run state) are restored
+  // from the saved profile on load, so a browser refresh — or just coming
+  // back to this page later — shows exactly what was fetched last time
+  // instead of an empty list that forces a re-fetch.
+  const [sheetId, setSheetId] = useState(saved.sheetId || null);
+  const [rows, setRows] = useState(saved.rows || []);
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
 
@@ -55,13 +59,44 @@ export default function SheetImport() {
   const [cycle, setCycle] = useState(saved.cycle || 1);
   const [previewRow, setPreviewRow] = useState(null);
   const [approving, setApproving] = useState(false);
-  const [runLog, setRunLog] = useState({}); // rowNumber -> { state, message, scheduledFor }
+  const [runLog, setRunLog] = useState(saved.runLog || {}); // rowNumber -> { state, message, scheduledFor }
   const [posts, setPosts] = useState([]);
 
   useEffect(() => {
     if (!user) return;
     return watchPosts(user.uid, setPosts);
   }, [user]);
+
+  // Update #8 — keep the saved copy of rows/runLog in sync as the person
+  // toggles, deletes, reorders, edits captions, or runs the queue, so a
+  // refresh at any point picks up right where they left off. Debounced so
+  // fast actions (like dragging to reorder) don't spam Firestore.
+  const persistTimerRef = useRef(null);
+  const skipNextPersistRef = useRef(true); // don't re-save immediately after loading from `saved`
+  useEffect(() => {
+    if (!user || !sheetId) return;
+    if (skipNextPersistRef.current) {
+      skipNextPersistRef.current = false;
+      return;
+    }
+    if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
+    persistTimerRef.current = setTimeout(() => {
+      const payload = {
+        input: sheetInput.trim(),
+        sheetName: sheetName.trim(),
+        intervalHours,
+        postFirstNow,
+        pageId: selectedPageId || null,
+        cycle,
+        sheetId,
+        rows,
+        runLog,
+      };
+      updateProfile({ sheetSource: JSON.parse(JSON.stringify(payload)) }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(persistTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, runLog, cycle]);
 
   const dupSet = useMemo(() => {
     const s = new Set();
@@ -82,6 +117,27 @@ export default function SheetImport() {
     rows.length > 0 &&
     sheetId &&
     rows.every((r) => dupSet.has(rowKey(sheetId, r.rowNumber, cycle)));
+
+  // Update #8 — single place that writes everything needed to fully restore
+  // this page (including the fetched rows and their run state) back to the
+  // profile. Stripping through JSON drops any `undefined` values, which
+  // Firestore's updateDoc would otherwise reject.
+  const persistSheetSource = (overrides = {}) => {
+    if (!user) return;
+    const payload = {
+      input: sheetInput.trim(),
+      sheetName: sheetName.trim(),
+      intervalHours,
+      postFirstNow,
+      pageId: selectedPageId || null,
+      cycle,
+      sheetId,
+      rows,
+      runLog,
+      ...overrides,
+    };
+    updateProfile({ sheetSource: JSON.parse(JSON.stringify(payload)) }).catch(() => {});
+  };
 
   const doFetch = async () => {
     setFetchError('');
@@ -116,9 +172,14 @@ export default function SheetImport() {
       // position, any local edits, and their run-log entry; only genuinely
       // new rows (by rowNumber) get appended at the end. Rows the person has
       // already deleted from the queue stay deleted even if re-fetched.
+      // If this is a different sheet than what's currently loaded, start
+      // clean instead of merging unrelated rows together.
+      const isSameSheet = sheetId === parsed.sheetId;
+      let nextRows;
       setRows((prevRows) => {
-        const existingByNum = new Map(prevRows.map((r) => [r.rowNumber, r]));
-        const merged = prevRows.map((r) => {
+        const baseRows = isSameSheet ? prevRows : [];
+        const existingByNum = new Map(baseRows.map((r) => [r.rowNumber, r]));
+        const merged = baseRows.map((r) => {
           const fresh = withImages.find((f) => f.rowNumber === r.rowNumber);
           // Row still exists in the sheet — keep local state (included flag,
           // any edited caption) but refresh image resolution in case the
@@ -126,21 +187,16 @@ export default function SheetImport() {
           return fresh ? { ...r, images: fresh.images, imageUrl: fresh.imageUrl, imageCount: fresh.imageCount, driveFolder: fresh.driveFolder, imageError: fresh.imageError } : r;
         });
         const newOnes = withImages.filter((f) => !existingByNum.has(f.rowNumber));
-        return [...merged, ...newOnes];
+        nextRows = [...merged, ...newOnes];
+        return nextRows;
       });
+      if (!isSameSheet) setRunLog({});
       setSheetId(parsed.sheetId);
-      if (user) {
-        updateProfile({
-          sheetSource: {
-            input: sheetInput.trim(),
-            sheetName: sheetName.trim(),
-            intervalHours,
-            postFirstNow,
-            pageId: selectedPageId || null,
-            cycle,
-          },
-        }).catch(() => {});
-      }
+      persistSheetSource({
+        sheetId: parsed.sheetId,
+        rows: nextRows,
+        runLog: isSameSheet ? runLog : {},
+      });
     } catch (e) {
       setFetchError(e.message);
     } finally {
@@ -268,18 +324,7 @@ export default function SheetImport() {
     const nextCycle = cycle + 1;
     setCycle(nextCycle);
     setRunLog({});
-    if (user) {
-      updateProfile({
-        sheetSource: {
-          input: sheetInput.trim(),
-          sheetName: sheetName.trim(),
-          intervalHours,
-          postFirstNow,
-          pageId: selectedPageId || null,
-          cycle: nextCycle,
-        },
-      }).catch(() => {});
-    }
+    persistSheetSource({ cycle: nextCycle, runLog: {} });
     // Under the new cycle none of the current rows are in dupSet yet, so
     // every checked row is eligible again.
     const freshRows = rows.filter((r) => r.included);
