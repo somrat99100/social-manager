@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
 import { watchPosts, deletePost, updatePostStatus } from '../services/content';
 import { checkPostStatus } from '../services/facebook';
@@ -19,6 +19,9 @@ export default function Log() {
   const [filter, setFilter] = useState('all');
   const [checking, setChecking] = useState(false);
   const [lastChecked, setLastChecked] = useState(null);
+  // Update #12 — surface WHY a scheduled post couldn't be verified, instead
+  // of it just silently staying "Scheduled" with no explanation.
+  const [staleTokenPages, setStaleTokenPages] = useState([]);
 
   useEffect(() => {
     if (!user) return;
@@ -34,6 +37,7 @@ export default function Log() {
     const pages = profile?.pages || [];
     const scheduled = posts.filter((p) => p.status === 'scheduled' && p.fbPostId && p.fbPageId);
     setChecking(true);
+    const authFailedPageIds = new Set();
     try {
       for (const p of scheduled) {
         const page = pages.find((pg) => pg.pageId === p.fbPageId);
@@ -41,8 +45,11 @@ export default function Log() {
         const result = await checkPostStatus(p.fbPostId, page.pageAccessToken);
         if (result === 'posted') {
           await updatePostStatus(user.uid, p.id, 'posted');
+        } else if (result === 'auth_error') {
+          authFailedPageIds.add(p.fbPageId);
         }
       }
+      setStaleTokenPages(pages.filter((pg) => authFailedPageIds.has(pg.pageId)).map((pg) => pg.name));
       setLastChecked(Date.now());
     } finally {
       setChecking(false);
@@ -67,6 +74,14 @@ export default function Log() {
         <p className="field-hint" style={{ marginTop: -10, marginBottom: 14 }}>
           Last checked {new Date(lastChecked).toLocaleTimeString()}
         </p>
+      )}
+      {staleTokenPages.length > 0 && (
+        <div className="field-error" style={{ marginTop: -8, marginBottom: 14 }}>
+          Couldn't verify posts for {staleTokenPages.join(', ')} — that page's saved token has expired.{' '}
+          <Link to="/settings">Reconnect it in Settings</Link>, then check again. If a post's scheduled time has
+          already passed, it's likely already live on Facebook even though it still shows "Scheduled" here — you
+          can mark it manually below once you're sure.
+        </div>
       )}
 
       <div className="tab-strip">
@@ -104,6 +119,7 @@ export default function Log() {
                 {p.status === 'scheduled' && p.scheduledAt && (
                   <span className="field-hint" style={{ display: 'block' }}>
                     Scheduled for {new Date(p.scheduledAt).toLocaleString()}
+                    {p.scheduledAt < Date.now() && ' · past due — likely already live'}
                   </span>
                 )}
               </div>
@@ -117,6 +133,15 @@ export default function Log() {
                     onClick={() => navigate('/create', { state: { draft: p } })}
                   >
                     Continue editing
+                  </button>
+                )}
+                {p.status === 'scheduled' && p.scheduledAt < Date.now() && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    title="Use this once you've confirmed on Facebook that it actually posted"
+                    onClick={() => updatePostStatus(user.uid, p.id, 'posted')}
+                  >
+                    Mark as posted
                   </button>
                 )}
                 <button className="btn btn-danger btn-sm" onClick={() => deletePost(user.uid, p.id)}>

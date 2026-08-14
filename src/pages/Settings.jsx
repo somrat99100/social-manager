@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/auth-context';
-import { fetchManagedPages } from '../services/facebook';
+import { fetchManagedPages, exchangeForLongLivedToken } from '../services/facebook';
 import TallyDot from '../components/tally-dot';
 
 function genId() {
@@ -61,6 +61,50 @@ export default function Settings() {
   const [driveError, setDriveError] = useState('');
   const [showDriveGuide, setShowDriveGuide] = useState(false);
 
+  // Update #12 — "reconnect again and again" was happening because tokens
+  // were never actually extended to be long-lived, despite the guide below
+  // claiming they were. A token pasted straight from Graph API Explorer is
+  // short-lived (~1-2 hours), and Page tokens fetched from it inherit that
+  // same short lifetime — so both the Page token AND the app's ability to
+  // check post status died within a couple of hours of connecting.
+  // With an App ID + Secret (from the same developer app used to generate
+  // the token), every token gets exchanged for Facebook's long-lived
+  // version (~60 days, and Page tokens derived from it effectively never
+  // expire) automatically before it's used or saved.
+  const [fbAppId, setFbAppId] = useState(profile?.fbAppId || '');
+  const [fbAppSecret, setFbAppSecret] = useState(profile?.fbAppSecret || '');
+  const [appCredsSaved, setAppCredsSaved] = useState(false);
+  const [appCredsError, setAppCredsError] = useState('');
+  const [showAppCredsForm, setShowAppCredsForm] = useState(false);
+  const hasAppCreds = Boolean((profile?.fbAppId || '').trim() && (profile?.fbAppSecret || '').trim());
+
+  const saveAppCreds = async () => {
+    setAppCredsError('');
+    try {
+      await updateProfile({ fbAppId: fbAppId.trim(), fbAppSecret: fbAppSecret.trim() });
+      setAppCredsSaved(true);
+      setTimeout(() => setAppCredsSaved(false), 2500);
+    } catch (e) {
+      console.error('Failed to save Facebook App credentials:', e);
+      setAppCredsError('Could not save those. Please try again.');
+    }
+  };
+
+  // Runs a pasted token through the long-lived exchange when App
+  // credentials are on file. Never blocks the connect flow if the exchange
+  // fails — falls back to the raw token and just flags that it's short-lived.
+  const extendToken = async (rawToken) => {
+    const appId = (profile?.fbAppId || '').trim();
+    const appSecret = (profile?.fbAppSecret || '').trim();
+    if (!appId || !appSecret) return { token: rawToken, extended: false };
+    try {
+      const longLived = await exchangeForLongLivedToken(rawToken, appId, appSecret);
+      return { token: longLived, extended: true };
+    } catch (e) {
+      return { token: rawToken, extended: false, warning: `Connected, but couldn't extend this token's lifetime (${e.message}) — it may expire sooner than usual.` };
+    }
+  };
+
   // Upserts a batch of Facebook-fetched pages into the connected pages list
   // (matched by pageId) without touching any other connected pages.
   const mergePagesIntoProfile = async (fbPages) => {
@@ -89,8 +133,10 @@ export default function Settings() {
     setLoadingPages(true);
     setFoundPages([]);
     try {
-      const result = await fetchManagedPages(token);
+      const { token: workingToken, warning } = await extendToken(token);
+      const result = await fetchManagedPages(workingToken);
       if (result.length === 0) setFbError('That token worked, but no Pages were found for it.');
+      else if (warning) setFbError(warning);
       setFoundPages(result);
     } catch (e) {
       setFbError(e.message);
@@ -108,7 +154,8 @@ export default function Settings() {
     setTokenActionError('');
     setSavingToken(true);
     try {
-      const result = await fetchManagedPages(token);
+      const { token: workingToken, warning } = await extendToken(token);
+      const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError('That token worked, but no Pages were found for it.');
         return;
@@ -117,7 +164,7 @@ export default function Settings() {
       const entry = {
         id: genId(),
         label: newTokenLabel.trim() || `Token ${savedTokens.length + 1}`,
-        token,
+        token: workingToken,
         pageIds: result.map((p) => p.id),
         savedAt: Date.now(),
       };
@@ -125,6 +172,7 @@ export default function Settings() {
       setNewTokenLabel('');
       setNewTokenValue('');
       setShowAddTokenForm(false);
+      if (warning) setTokenActionError(warning);
       setReconnectResult({ id: entry.id, count: result.length });
       setTimeout(() => setReconnectResult(null), 3500);
     } catch (e) {
@@ -141,7 +189,8 @@ export default function Settings() {
     setTokenActionError('');
     setReconnectingId(tokenEntry.id);
     try {
-      const result = await fetchManagedPages(tokenEntry.token);
+      const { token: workingToken, warning } = await extendToken(tokenEntry.token);
+      const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError(`"${tokenEntry.label}" didn't return any Pages — it may have expired. Update it below.`);
         return;
@@ -150,9 +199,10 @@ export default function Settings() {
       // Keep this token's known page list current, in case Pages were
       // added/removed on the Facebook side since it was last used.
       const nextTokens = savedTokens.map((t) =>
-        t.id === tokenEntry.id ? { ...t, pageIds: result.map((p) => p.id) } : t
+        t.id === tokenEntry.id ? { ...t, token: workingToken, pageIds: result.map((p) => p.id) } : t
       );
       await updateProfile({ fbUserTokens: nextTokens });
+      if (warning) setTokenActionError(warning);
       setReconnectResult({ id: tokenEntry.id, count: result.length });
       setTimeout(() => setReconnectResult(null), 3500);
     } catch (e) {
@@ -173,18 +223,20 @@ export default function Settings() {
     setTokenActionError('');
     setReconnectingId(tokenEntry.id);
     try {
-      const result = await fetchManagedPages(token);
+      const { token: workingToken, warning } = await extendToken(token);
+      const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError('That token worked, but no Pages were found for it.');
         return;
       }
       await mergePagesIntoProfile(result);
       const nextTokens = savedTokens.map((t) =>
-        t.id === tokenEntry.id ? { ...t, token, pageIds: result.map((p) => p.id) } : t
+        t.id === tokenEntry.id ? { ...t, token: workingToken, pageIds: result.map((p) => p.id) } : t
       );
       await updateProfile({ fbUserTokens: nextTokens });
       setEditingTokenId(null);
       setEditingTokenValue('');
+      if (warning) setTokenActionError(warning);
       setReconnectResult({ id: tokenEntry.id, count: result.length });
       setTimeout(() => setReconnectResult(null), 3500);
     } catch (e) {
@@ -231,14 +283,15 @@ export default function Settings() {
     setFbError('');
     try {
       await mergePagesIntoProfile(foundPages);
-      const token = userToken.trim();
-      if (token) {
-        const alreadySaved = savedTokens.some((t) => t.token === token);
+      const rawToken = userToken.trim();
+      if (rawToken) {
+        const { token: workingToken } = await extendToken(rawToken);
+        const alreadySaved = savedTokens.some((t) => t.token === workingToken || t.token === rawToken);
         if (!alreadySaved) {
           const entry = {
             id: genId(),
             label: `Token ${savedTokens.length + 1}`,
-            token,
+            token: workingToken,
             pageIds: foundPages.map((p) => p.id),
             savedAt: Date.now(),
           };
@@ -301,6 +354,58 @@ export default function Settings() {
         <div className="settings-block-head">
           <h3>Facebook Pages</h3>
           <TallyDot status={connectedPages.length > 0 ? 'live' : 'idle'} />
+        </div>
+
+        {/* Update #12 — App credentials, used to keep tokens from expiring. */}
+        <div className={`app-creds-box ${hasAppCreds ? 'app-creds-box-ok' : ''}`}>
+          <div className="app-creds-box-head">
+            <span>
+              {hasAppCreds ? '✓ Tokens are set to stay connected' : '⚠ Tokens expire in ~1-2 hours right now'}
+            </span>
+            {hasAppCreds && <span className="badge badge-ok">Configured</span>}
+          </div>
+          <p className="field-hint" style={{ margin: '6px 0 0' }}>
+            {hasAppCreds
+              ? "Every token gets extended to Facebook's long-lived version (~60 days, Page tokens effectively don't expire) automatically when you connect or reconnect."
+              : "Add your Facebook App ID + Secret (from the same developer app you use to generate a token below) once, and Social Manager will automatically extend every token so you stop needing to reconnect so often."}
+          </p>
+          {!showAppCredsForm ? (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setShowAppCredsForm(true)}>
+              {hasAppCreds ? 'Update App ID / Secret' : '+ Add App ID / Secret'}
+            </button>
+          ) : (
+            <div style={{ marginTop: 10 }}>
+              <div className="field">
+                <label>App ID</label>
+                <input value={fbAppId} onChange={(e) => setFbAppId(e.target.value)} placeholder="e.g. 1234567890123456" />
+              </div>
+              <div className="field">
+                <label>App Secret</label>
+                <input
+                  type="password"
+                  value={fbAppSecret}
+                  onChange={(e) => setFbAppSecret(e.target.value)}
+                  placeholder="From Settings → Basic on your Facebook app"
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button className="btn btn-primary btn-sm" onClick={saveAppCreds} disabled={!fbAppId.trim() || !fbAppSecret.trim()}>
+                  {appCredsSaved ? 'Saved ✓' : 'Save'}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => { setShowAppCredsForm(false); setFbAppId(profile?.fbAppId || ''); setFbAppSecret(profile?.fbAppSecret || ''); setAppCredsError(''); }}
+                >
+                  Cancel
+                </button>
+              </div>
+              <p className="field-hint" style={{ marginTop: 8 }}>
+                Find both on <strong>developers.facebook.com/apps → your app → Settings → Basic</strong>. This
+                stays in your private profile and is only ever used to extend your own tokens.
+              </p>
+              {appCredsError && <div className="field-error" style={{ marginTop: 6 }}>{appCredsError}</div>}
+            </div>
+          )}
         </div>
 
         {connectedPages.length > 0 && (
@@ -513,8 +618,8 @@ export default function Settings() {
         {showFbGuide && (
               <div className="guide-panel">
                 <p className="field-hint" style={{ margin: '2px 0 10px', fontWeight: 600 }}>
-                  Takes about 5 minutes. You only need to do this once — after that, Social Manager
-                  stores your Page's own token and reconnecting is rare.
+                  Takes about 5 minutes. Add your App ID and Secret in the box above so Social Manager can
+                  extend tokens automatically — after that, reconnecting is rare.
                 </p>
 
                 <div className="guide-tabs">
@@ -600,9 +705,10 @@ export default function Settings() {
                     Explorer. Click inside it, select all, and copy it.
                   </li>
                   <li>
-                    Paste it into the box above and click <strong>Find pages</strong>. Social Manager
-                    exchanges this token for your Page's own long-lived Page Access Token automatically —
-                    you don't need to visit the Access Token Debugger or do any conversion yourself.
+                    Paste it into the box above and click <strong>Find pages</strong>.{' '}
+                    {hasAppCreds
+                      ? "Since you've added your App ID/Secret above, Social Manager automatically exchanges this for your Page's own long-lived token — no need to visit the Access Token Debugger or convert anything yourself."
+                      : 'Add your App ID and App Secret in the box above first (from Settings → Basic on this same app) so Social Manager can automatically exchange this for a long-lived token — otherwise it (and the Page token built from it) expires in about an hour and you\'ll need to repeat this often.'}
                   </li>
                   <li>Pick your Page from the list that appears and click <strong>Connect</strong>.</li>
                 </ol>

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../context/auth-context';
 import { watchPosts, updatePostStatus } from '../services/content';
 import { checkPostStatus } from '../services/facebook';
@@ -18,6 +18,14 @@ const INTERVAL_MS = 45_000; // check every 45s
  * reads the live post list through a ref instead of a dependency so the
  * interval itself is stable, and also re-checks whenever the browser tab
  * regains focus (covers laptops that throttle timers in background tabs).
+ *
+ * Update #12 — a page whose Access Token has expired makes every check for
+ * its scheduled posts fail with an auth error, which used to be swallowed
+ * silently — posts would sit stuck as "Scheduled" forever with no
+ * explanation, even after actually going live on Facebook. Now the hook
+ * tracks which pages are failing on auth and exposes that, so the UI can
+ * tell the person their token needs reconnecting instead of just... nothing
+ * happening.
  */
 export function usePostStatusSync() {
   const { user, profile } = useAuth();
@@ -25,6 +33,7 @@ export function usePostStatusSync() {
   const postsRef = useRef([]);
   const profileRef = useRef(profile);
   profileRef.current = profile;
+  const [pagesNeedingReconnect, setPagesNeedingReconnect] = useState([]); // [{ pageId, name }]
 
   useEffect(() => {
     if (!user) return;
@@ -44,6 +53,7 @@ export function usePostStatusSync() {
       );
       if (scheduled.length === 0 || pages.length === 0) return;
       checkingRef.current = true;
+      const authFailedPageIds = new Set();
       try {
         for (const p of scheduled) {
           const page = pages.find((pg) => pg.pageId === p.fbPageId);
@@ -51,8 +61,13 @@ export function usePostStatusSync() {
           const result = await checkPostStatus(p.fbPostId, page.pageAccessToken);
           if (result === 'posted') {
             await updatePostStatus(user.uid, p.id, 'posted');
+          } else if (result === 'auth_error') {
+            authFailedPageIds.add(p.fbPageId);
           }
         }
+        setPagesNeedingReconnect(
+          pages.filter((pg) => authFailedPageIds.has(pg.pageId)).map((pg) => ({ pageId: pg.pageId, name: pg.name }))
+        );
       } finally {
         checkingRef.current = false;
       }
@@ -70,4 +85,6 @@ export function usePostStatusSync() {
       document.removeEventListener('visibilitychange', onVisible);
     };
   }, [user]);
+
+  return { pagesNeedingReconnect };
 }

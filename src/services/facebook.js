@@ -1,6 +1,27 @@
 const GRAPH = 'https://graph.facebook.com/v20.0';
 
 /**
+ * Exchange a normal (short-lived, ~1-2 hour) Facebook token for a long-lived
+ * one (~60 days). Page Access Tokens fetched via fetchManagedPages inherit
+ * this lifetime — a long-lived user token yields Page tokens that Facebook
+ * effectively never expires (until the person changes their password or
+ * revokes the app). This is what stops the "reconnect again and again"
+ * problem: without this exchange, every pasted token — and every Page token
+ * derived from it — dies within a couple of hours.
+ * Requires a Facebook App ID + App Secret (from developers.facebook.com),
+ * entered once in Settings.
+ */
+export async function exchangeForLongLivedToken(shortLivedToken, appId, appSecret) {
+  const res = await fetch(
+    `${GRAPH}/oauth/access_token?grant_type=fb_exchange_token&client_id=${encodeURIComponent(appId)}&client_secret=${encodeURIComponent(appSecret)}&fb_exchange_token=${encodeURIComponent(shortLivedToken)}`
+  );
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'Facebook rejected the App ID/Secret while extending that token.');
+  if (!data.access_token) throw new Error('Facebook did not return an extended token.');
+  return data.access_token;
+}
+
+/**
  * Uploads one image to the Page's photo library without publishing it as
  * its own post. Returns the photo's ID, which gets attached to a /feed
  * post afterwards — this is how Facebook builds a single post containing
@@ -59,7 +80,15 @@ export async function fetchPageInfo(pageId, pageAccessToken) {
  * Facebook publishes scheduled posts on its own servers at the scheduled
  * time — this just asks the Graph API for the post's current status so the
  * app can flip a post's status from "scheduled" to "posted" once it's live.
- * Returns 'posted' | 'scheduled' | 'unknown' (e.g. deleted, or a transient error).
+ * Returns 'posted' | 'scheduled' | 'auth_error' | 'unknown'.
+ *
+ * 'auth_error' means the Page Access Token itself is dead (expired/revoked)
+ * — this used to get lumped in with 'unknown' and silently ignored, which is
+ * why posts could sit stuck showing "Scheduled" forever even after Facebook
+ * had actually published them: the check kept failing for a reason that had
+ * nothing to do with whether the post went out, and nothing surfaced that to
+ * the person. Callers should treat 'auth_error' as "this page's token needs
+ * reconnecting", not "still scheduled".
  */
 export async function checkPostStatus(postId, pageAccessToken) {
   try {
@@ -68,9 +97,14 @@ export async function checkPostStatus(postId, pageAccessToken) {
     );
     const data = await res.json();
     if (data.error) {
-      // Facebook returns error code 100/etc. for a scheduled post that hasn't
-      // published yet in some API versions — treat any "can't see it" error
-      // as still-scheduled rather than assuming failure.
+      // Code 190 = expired/invalid access token. Other auth-flavored codes
+      // (10, 200, 463, 467) also mean the token itself is the problem, not
+      // the post. Anything else (e.g. a transient network/API hiccup) is
+      // genuinely unknown and safe to just retry next cycle.
+      const code = data.error.code;
+      if (code === 190 || code === 10 || code === 200 || code === 463 || code === 467) {
+        return 'auth_error';
+      }
       return 'unknown';
     }
     if (data.is_published === false) return 'scheduled';

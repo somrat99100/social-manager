@@ -27,39 +27,87 @@ function rowKey(sheetId, rowNumber, cycle) {
   return `${sheetId}:${rowNumber}:c${cycle}`;
 }
 
+function genId() {
+  return `q_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function emptySource(pageId) {
+  return {
+    id: genId(),
+    label: '',
+    pageId: pageId || null,
+    input: '',
+    sheetName: '',
+    sheetId: null,
+    intervalHours: 4,
+    postFirstNow: true,
+    cycle: 1,
+    rows: [],
+    runLog: {},
+    createdAt: Date.now(),
+  };
+}
+
 export default function SheetImport() {
   const { user, profile, updateProfile } = useAuth();
   const pages = profile?.pages || [];
-  const saved = profile?.sheetSource || {};
 
-  const [selectedPageId, setSelectedPageId] = useState(saved.pageId || pages[0]?.pageId || null);
+  // Update #11 — support running MORE THAN ONE sheet queue at a time, each
+  // pointed at its own page. Previously the whole page was backed by a
+  // single `profile.sheetSource` object, so fetching a new sheet for Page B
+  // while Page A's queue was still running would overwrite Page A's queue.
+  // Now each queue is its own entry in `profile.sheetSources`, switchable
+  // via tabs, so Page A keeps posting on its own schedule while you set up
+  // (and run) a completely separate queue for Page B.
+  const sources = useMemo(() => {
+    if (profile?.sheetSources) return profile.sheetSources;
+    // One-time migration path for anyone upgrading from the single-queue
+    // version — wrap the old singular source in a list so nothing is lost.
+    if (profile?.sheetSource && Object.keys(profile.sheetSource).length > 0) {
+      return [{ id: 'legacy', label: '', createdAt: 0, ...profile.sheetSource }];
+    }
+    return [];
+  }, [profile]);
+
+  const [activeSourceId, setActiveSourceId] = useState(null);
+
+  // Bootstrap: make sure there's always an active queue to work with. Picks
+  // the first existing queue, or — if none exist yet and a page is
+  // connected — silently creates one so the form isn't empty/disabled.
+  useEffect(() => {
+    if (activeSourceId && sources.some((s) => s.id === activeSourceId)) return;
+    if (sources.length > 0) {
+      setActiveSourceId(sources[0].id);
+    } else if (pages.length > 0 && user) {
+      const entry = emptySource(pages[0].pageId);
+      updateProfile({ sheetSources: [entry], sheetSource: null }).catch(() => {});
+      setActiveSourceId(entry.id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sources, pages.length, user]);
+
+  const activeSource = sources.find((s) => s.id === activeSourceId) || null;
+
+  const [selectedPageId, setSelectedPageId] = useState(null);
   const fb = pages.find((p) => p.pageId === selectedPageId) || pages[0] || null;
 
-  const [sheetInput, setSheetInput] = useState(saved.input || '');
-  const [sheetName, setSheetName] = useState(saved.sheetName || '');
-  // Update #8 — the fetched rows (and their per-row run state) are restored
-  // from the saved profile on load, so a browser refresh — or just coming
-  // back to this page later — shows exactly what was fetched last time
-  // instead of an empty list that forces a re-fetch.
-  const [sheetId, setSheetId] = useState(saved.sheetId || null);
-  const [rows, setRows] = useState(saved.rows || []);
+  const [queueLabel, setQueueLabel] = useState('');
+  const [sheetInput, setSheetInput] = useState('');
+  const [sheetName, setSheetName] = useState('');
+  const [sheetId, setSheetId] = useState(null);
+  const [rows, setRows] = useState([]);
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
 
-  const [intervalPreset, setIntervalPreset] = useState(
-    saved.intervalHours && INTERVAL_PRESETS.some((p) => p.hours === saved.intervalHours) ? saved.intervalHours : 4
-  );
-  const [customHours, setCustomHours] = useState(
-    saved.intervalHours && !INTERVAL_PRESETS.some((p) => p.hours === saved.intervalHours) ? saved.intervalHours : 1
-  );
+  const [intervalPreset, setIntervalPreset] = useState(4);
+  const [customHours, setCustomHours] = useState(1);
   const intervalHours = intervalPreset === 'custom' ? Number(customHours) || MIN_CUSTOM_HOURS : intervalPreset;
 
-  const [postFirstNow, setPostFirstNow] = useState(saved.postFirstNow !== false);
-
-  const [cycle, setCycle] = useState(saved.cycle || 1);
+  const [postFirstNow, setPostFirstNow] = useState(true);
+  const [cycle, setCycle] = useState(1);
   const [previewRow, setPreviewRow] = useState(null);
   const [approving, setApproving] = useState(false);
-  const [runLog, setRunLog] = useState(saved.runLog || {}); // rowNumber -> { state, message, scheduledFor }
+  const [runLog, setRunLog] = useState({}); // rowNumber -> { state, message, scheduledFor }
   const [posts, setPosts] = useState([]);
 
   useEffect(() => {
@@ -67,36 +115,100 @@ export default function SheetImport() {
     return watchPosts(user.uid, setPosts);
   }, [user]);
 
-  // Update #8 — keep the saved copy of rows/runLog in sync as the person
-  // toggles, deletes, reorders, edits captions, or runs the queue, so a
-  // refresh at any point picks up right where they left off. Debounced so
-  // fast actions (like dragging to reorder) don't spam Firestore.
+  // Whenever the active queue changes (including on first load), pull that
+  // queue's saved fields into the local editing state. `skipNextPersistRef`
+  // prevents the persist effect below from immediately writing this same
+  // data straight back (which would look like a no-op but would still spam
+  // Firestore and could race the initial load).
   const persistTimerRef = useRef(null);
-  const skipNextPersistRef = useRef(true); // don't re-save immediately after loading from `saved`
+  const skipNextPersistRef = useRef(true);
+  const loadedIdRef = useRef(null);
   useEffect(() => {
-    if (!user || !sheetId) return;
+    if (!activeSourceId || loadedIdRef.current === activeSourceId) return;
+    const s = sources.find((x) => x.id === activeSourceId) || {};
+    loadedIdRef.current = activeSourceId;
+    skipNextPersistRef.current = true;
+    setSelectedPageId(s.pageId || pages[0]?.pageId || null);
+    setQueueLabel(s.label || '');
+    setSheetInput(s.input || '');
+    setSheetName(s.sheetName || '');
+    setSheetId(s.sheetId || null);
+    setRows(s.rows || []);
+    setIntervalPreset(
+      s.intervalHours && INTERVAL_PRESETS.some((p) => p.hours === s.intervalHours) ? s.intervalHours : 4
+    );
+    setCustomHours(
+      s.intervalHours && !INTERVAL_PRESETS.some((p) => p.hours === s.intervalHours) ? s.intervalHours : 1
+    );
+    setPostFirstNow(s.postFirstNow !== false);
+    setCycle(s.cycle || 1);
+    setRunLog(s.runLog || {});
+    setFetchError('');
+    setPreviewRow(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSourceId, sources]);
+
+  // Update #11 — single place that writes the ACTIVE queue's full state
+  // back into `sheetSources`, leaving every other queue untouched. Stripping
+  // through JSON drops any `undefined` values, which Firestore's updateDoc
+  // would otherwise reject.
+  const persistActiveSource = (overrides = {}) => {
+    if (!user || !activeSourceId) return;
+    const current = {
+      id: activeSourceId,
+      label: queueLabel.trim(),
+      pageId: selectedPageId || null,
+      input: sheetInput.trim(),
+      sheetName: sheetName.trim(),
+      intervalHours,
+      postFirstNow,
+      cycle,
+      sheetId,
+      rows,
+      runLog,
+      createdAt: activeSource?.createdAt || Date.now(),
+      ...overrides,
+    };
+    const nextSources = sources.map((s) => (s.id === activeSourceId ? current : s));
+    if (!nextSources.some((s) => s.id === activeSourceId)) nextSources.push(current);
+    updateProfile({ sheetSources: JSON.parse(JSON.stringify(nextSources)), sheetSource: null }).catch(() => {});
+  };
+
+  // Debounced auto-save of the active queue as rows/runLog/cycle change
+  // (toggling, deleting, reordering, running the queue, etc.).
+  useEffect(() => {
+    if (!user || !sheetId || !activeSourceId) return;
     if (skipNextPersistRef.current) {
       skipNextPersistRef.current = false;
       return;
     }
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(() => {
-      const payload = {
-        input: sheetInput.trim(),
-        sheetName: sheetName.trim(),
-        intervalHours,
-        postFirstNow,
-        pageId: selectedPageId || null,
-        cycle,
-        sheetId,
-        rows,
-        runLog,
-      };
-      updateProfile({ sheetSource: JSON.parse(JSON.stringify(payload)) }).catch(() => {});
-    }, 600);
+    persistTimerRef.current = setTimeout(() => persistActiveSource(), 600);
     return () => clearTimeout(persistTimerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, runLog, cycle]);
+
+  const addQueue = async () => {
+    const usedPageIds = new Set(sources.map((s) => s.pageId));
+    const nextPage = pages.find((p) => !usedPageIds.has(p.pageId)) || pages[0];
+    const entry = emptySource(nextPage?.pageId || null);
+    const nextSources = [...sources, entry];
+    await updateProfile({ sheetSources: JSON.parse(JSON.stringify(nextSources)), sheetSource: null });
+    loadedIdRef.current = null;
+    setActiveSourceId(entry.id);
+  };
+
+  const removeQueue = async (id) => {
+    const target = sources.find((s) => s.id === id);
+    const name = target?.label || pages.find((p) => p.pageId === target?.pageId)?.name || 'this queue';
+    if (!confirm(`Remove "${name}"? Posts already sent or scheduled stay on Facebook and in the broadcast log — this only removes the queue view here.`)) return;
+    const nextSources = sources.filter((s) => s.id !== id);
+    await updateProfile({ sheetSources: JSON.parse(JSON.stringify(nextSources)), sheetSource: null });
+    if (activeSourceId === id) {
+      loadedIdRef.current = null;
+      setActiveSourceId(nextSources[0]?.id || null);
+    }
+  };
 
   const dupSet = useMemo(() => {
     const s = new Set();
@@ -117,27 +229,6 @@ export default function SheetImport() {
     rows.length > 0 &&
     sheetId &&
     rows.every((r) => dupSet.has(rowKey(sheetId, r.rowNumber, cycle)));
-
-  // Update #8 — single place that writes everything needed to fully restore
-  // this page (including the fetched rows and their run state) back to the
-  // profile. Stripping through JSON drops any `undefined` values, which
-  // Firestore's updateDoc would otherwise reject.
-  const persistSheetSource = (overrides = {}) => {
-    if (!user) return;
-    const payload = {
-      input: sheetInput.trim(),
-      sheetName: sheetName.trim(),
-      intervalHours,
-      postFirstNow,
-      pageId: selectedPageId || null,
-      cycle,
-      sheetId,
-      rows,
-      runLog,
-      ...overrides,
-    };
-    updateProfile({ sheetSource: JSON.parse(JSON.stringify(payload)) }).catch(() => {});
-  };
 
   const doFetch = async () => {
     setFetchError('');
@@ -190,13 +281,10 @@ export default function SheetImport() {
         nextRows = [...merged, ...newOnes];
         return nextRows;
       });
+      const nextRunLog = isSameSheet ? runLog : {};
       if (!isSameSheet) setRunLog({});
       setSheetId(parsed.sheetId);
-      persistSheetSource({
-        sheetId: parsed.sheetId,
-        rows: nextRows,
-        runLog: isSameSheet ? runLog : {},
-      });
+      persistActiveSource({ sheetId: parsed.sheetId, rows: nextRows, runLog: nextRunLog });
     } catch (e) {
       setFetchError(e.message);
     } finally {
@@ -324,7 +412,7 @@ export default function SheetImport() {
     const nextCycle = cycle + 1;
     setCycle(nextCycle);
     setRunLog({});
-    persistSheetSource({ cycle: nextCycle, runLog: {} });
+    persistActiveSource({ cycle: nextCycle, runLog: {} });
     // Under the new cycle none of the current rows are in dupSet yet, so
     // every checked row is eligible again.
     const freshRows = rows.filter((r) => r.included);
@@ -342,17 +430,35 @@ export default function SheetImport() {
         <div>
           <h1>Post from Google Sheet</h1>
           <p className="field-hint">
-            Pull captions and image links from a sheet, then post them one by one on a timer.
+            Pull captions and image links from a sheet, then post them one by one on a timer. Run separate queues
+            side by side — one per page — without them interfering with each other.
           </p>
         </div>
-        {pages.length > 1 && (
-          <select value={fb?.pageId || ''} onChange={(e) => setSelectedPageId(e.target.value)} style={{ maxWidth: 220 }}>
-            {pages.map((p) => (
-              <option key={p.pageId} value={p.pageId}>{p.name}</option>
-            ))}
-          </select>
-        )}
       </div>
+
+      {/* Update #11 — queue tabs. Each tab is a fully independent sheet
+          source with its own page, schedule, and row list. */}
+      {sources.length > 0 && (
+        <div className="tab-strip queue-tab-strip">
+          {sources.map((s) => {
+            const pageName = pages.find((p) => p.pageId === s.pageId)?.name || 'No page';
+            const rowCount = s.id === activeSourceId ? rows.length : (s.rows?.length || 0);
+            return (
+              <button
+                key={s.id}
+                className={`tab-btn queue-tab-btn ${activeSourceId === s.id ? 'tab-btn-active' : ''}`}
+                onClick={() => setActiveSourceId(s.id)}
+              >
+                {s.label || pageName}
+                {rowCount > 0 && <span className="queue-tab-count">{rowCount}</span>}
+              </button>
+            );
+          })}
+          <button className="tab-btn queue-tab-add" onClick={addQueue} disabled={pages.length === 0}>
+            + New queue
+          </button>
+        </div>
+      )}
 
       {!fb && (
         <div className="card page-card empty-card">
@@ -365,39 +471,78 @@ export default function SheetImport() {
         </div>
       )}
 
-      <div className="card page-card">
-        <div className="settings-block-head">
-          <h3>Sheet</h3>
-          <TallyDot status={rows.length > 0 ? 'live' : 'idle'} />
-        </div>
-        <p className="field-hint" style={{ margin: '6px 0 14px' }}>
-          Share the sheet as <strong>Anyone with the link — Viewer</strong>, then paste its link below. Put a
-          header row on top with columns like <strong>Caption</strong> and <strong>Image Link</strong> — if no
-          headers match, column A is used as the caption and column B as the image link. The image link can be a
-          direct image URL, a Google Drive file link, or a Drive <strong>folder</strong> link (every image inside
-          it becomes one multi-photo post — needs a Drive API key in Connect profile). Wrap words in{' '}
-          <strong>**double asterisks**</strong> to make them bold.
-        </p>
+      {fb && (
+        <div className="card page-card">
+          <div className="settings-block-head">
+            <h3>Sheet</h3>
+            <TallyDot status={rows.length > 0 ? 'live' : 'idle'} />
+          </div>
+          <p className="field-hint" style={{ margin: '6px 0 14px' }}>
+            Share the sheet as <strong>Anyone with the link — Viewer</strong>, then paste its link below. Put a
+            header row on top with columns like <strong>Caption</strong> and <strong>Image Link</strong> — if no
+            headers match, column A is used as the caption and column B as the image link. The image link can be a
+            direct image URL, a Google Drive file link, or a Drive <strong>folder</strong> link (every image inside
+            it becomes one multi-photo post — needs a Drive API key in Connect profile). Wrap words in{' '}
+            <strong>**double asterisks**</strong> to make them bold.
+          </p>
 
-        <div className="field">
-          <label>Google Sheet link (or ID)</label>
-          <input
-            value={sheetInput}
-            onChange={(e) => setSheetInput(e.target.value)}
-            placeholder="https://docs.google.com/spreadsheets/d/…"
-          />
-        </div>
-        <div className="field">
-          <label>Tab name (optional — leave blank for the first tab)</label>
-          <input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="e.g. Sheet1" />
-        </div>
-        <button className="btn btn-primary" onClick={doFetch} disabled={fetching || !sheetInput.trim()}>
-          {fetching ? 'Fetching…' : rows.length > 0 ? 'Re-fetch rows' : 'Fetch rows'}
-        </button>
-        {fetchError && <div className="field-error" style={{ marginTop: 10 }}>{fetchError}</div>}
-      </div>
+          {sources.length > 1 && (
+            <div className="field">
+              <label>Queue name (optional — helps tell queues apart)</label>
+              <input
+                value={queueLabel}
+                onChange={(e) => setQueueLabel(e.target.value)}
+                onBlur={() => persistActiveSource({ label: queueLabel.trim() })}
+                placeholder="e.g. Morning book drops"
+              />
+            </div>
+          )}
 
-      {rows.length > 0 && (
+          {pages.length > 1 && (
+            <div className="field">
+              <label>Posting page for this queue</label>
+              <select
+                value={fb?.pageId || ''}
+                onChange={(e) => {
+                  const nextPageId = e.target.value;
+                  setSelectedPageId(nextPageId);
+                  persistActiveSource({ pageId: nextPageId });
+                }}
+              >
+                {pages.map((p) => (
+                  <option key={p.pageId} value={p.pageId}>{p.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="field">
+            <label>Google Sheet link (or ID)</label>
+            <input
+              value={sheetInput}
+              onChange={(e) => setSheetInput(e.target.value)}
+              placeholder="https://docs.google.com/spreadsheets/d/…"
+            />
+          </div>
+          <div className="field">
+            <label>Tab name (optional — leave blank for the first tab)</label>
+            <input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="e.g. Sheet1" />
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="btn btn-primary" onClick={doFetch} disabled={fetching || !sheetInput.trim()}>
+              {fetching ? 'Fetching…' : rows.length > 0 ? 'Re-fetch rows' : 'Fetch rows'}
+            </button>
+            {sources.length > 1 && (
+              <button className="btn btn-danger btn-sm" onClick={() => removeQueue(activeSourceId)}>
+                Remove this queue
+              </button>
+            )}
+          </div>
+          {fetchError && <div className="field-error" style={{ marginTop: 10 }}>{fetchError}</div>}
+        </div>
+      )}
+
+      {fb && rows.length > 0 && (
         <>
           <div className="card page-card">
             <div className="settings-block-head">
@@ -434,7 +579,7 @@ export default function SheetImport() {
             </label>
             <p className="field-hint" style={{ marginTop: 10 }}>
               Once approved, later posts are scheduled directly on Facebook's side — they go out on time even if
-              you close this browser tab.
+              you close this browser tab. This queue runs independently of any other queue you've set up.
             </p>
           </div>
 
