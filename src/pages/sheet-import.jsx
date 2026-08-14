@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../context/auth-context';
 import { publishToPage, schedulePost } from '../services/facebook';
 import { savePost, watchPosts } from '../services/content';
-import { parseSheetInput, fetchSheetRows, resolveRowImages } from '../services/sheets';
+import { parseSheetInput, fetchSheetRows, resolveRowImages, fetchImageBlob, fetchSpreadsheetTabs } from '../services/sheets';
 import SheetRowModal from '../components/sheet-row-modal';
 import TallyDot from '../components/tally-dot';
 
@@ -99,6 +99,16 @@ export default function SheetImport() {
   const [fetching, setFetching] = useState(false);
   const [fetchError, setFetchError] = useState('');
 
+  // Auto-detected spreadsheet title + list of tab names, via the Sheets API
+  // (reuses the same Google API key as the Drive folder feature). Lets the
+  // person pick the tab from a dropdown instead of having to know/type its
+  // exact name — handy once more than one queue points at sheets whose tabs
+  // are named differently from each other.
+  const [sheetTitle, setSheetTitle] = useState('');
+  const [sheetTabs, setSheetTabs] = useState([]);
+  const [detectingTabs, setDetectingTabs] = useState(false);
+  const [detectError, setDetectError] = useState('');
+
   const [intervalPreset, setIntervalPreset] = useState(4);
   const [customHours, setCustomHours] = useState(1);
   const intervalHours = intervalPreset === 'custom' ? Number(customHours) || MIN_CUSTOM_HOURS : intervalPreset;
@@ -145,8 +155,49 @@ export default function SheetImport() {
     setRunLog(s.runLog || {});
     setFetchError('');
     setPreviewRow(null);
+    setSheetTitle('');
+    setSheetTabs([]);
+    setDetectError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSourceId, sources]);
+
+  // Auto-detects the spreadsheet's real title and tab names for whichever
+  // sheet link is currently in the box, debounced so it doesn't fire on
+  // every keystroke. Silently does nothing without a Drive/Sheets API key —
+  // the "Tab name" field just falls back to plain text entry in that case.
+  const detectTimerRef = useRef(null);
+  useEffect(() => {
+    if (detectTimerRef.current) clearTimeout(detectTimerRef.current);
+    const driveApiKey = profile?.driveApiKey || '';
+    const parsed = parseSheetInput(sheetInput);
+    if (!driveApiKey || !parsed) {
+      setSheetTitle('');
+      setSheetTabs([]);
+      return;
+    }
+    detectTimerRef.current = setTimeout(async () => {
+      setDetectingTabs(true);
+      setDetectError('');
+      try {
+        const meta = await fetchSpreadsheetTabs(parsed.sheetId, driveApiKey);
+        setSheetTitle(meta.title);
+        setSheetTabs(meta.tabs);
+        // If no tab is chosen yet (or the previously chosen one no longer
+        // exists), default to the first tab so the dropdown isn't empty.
+        if (meta.tabs.length > 0 && !meta.tabs.some((t) => t.title === sheetName)) {
+          setSheetName(meta.tabs[0].title);
+        }
+      } catch (e) {
+        setSheetTitle('');
+        setSheetTabs([]);
+        setDetectError(e.message);
+      } finally {
+        setDetectingTabs(false);
+      }
+    }, 500);
+    return () => clearTimeout(detectTimerRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheetInput, profile?.driveApiKey]);
 
   // Update #11 — single place that writes the ACTIVE queue's full state
   // back into `sheetSources`, leaving every other queue untouched. Stripping
@@ -246,7 +297,7 @@ export default function SheetImport() {
       const driveApiKey = profile?.driveApiKey || '';
       const withImages = await Promise.all(
         fetched.map(async (r) => {
-          const { images, folder, error } = await resolveRowImages(r.imageUrl, driveApiKey);
+          const { images, folder, error, sourceType } = await resolveRowImages(r.imageUrl, driveApiKey);
           return {
             ...r,
             included: true,
@@ -255,6 +306,7 @@ export default function SheetImport() {
             imageCount: images.length,
             driveFolder: folder,
             imageError: error,
+            imageSourceType: sourceType,
           };
         })
       );
@@ -275,7 +327,7 @@ export default function SheetImport() {
           // Row still exists in the sheet — keep local state (included flag,
           // any edited caption) but refresh image resolution in case the
           // sheet's image link changed.
-          return fresh ? { ...r, images: fresh.images, imageUrl: fresh.imageUrl, imageCount: fresh.imageCount, driveFolder: fresh.driveFolder, imageError: fresh.imageError } : r;
+          return fresh ? { ...r, images: fresh.images, imageUrl: fresh.imageUrl, imageCount: fresh.imageCount, driveFolder: fresh.driveFolder, imageError: fresh.imageError, imageSourceType: fresh.imageSourceType } : r;
         });
         const newOnes = withImages.filter((f) => !existingByNum.has(f.rowNumber));
         nextRows = [...merged, ...newOnes];
@@ -347,13 +399,29 @@ export default function SheetImport() {
       }
 
       const isImmediate = postFirstNow && i === 0;
+      // A single plain-internet image link (not Drive) is fetched into the
+      // browser and uploaded as raw bytes rather than handed to Facebook as
+      // a `url` — see fetchImageBlob's docstring for why. Drive links and
+      // multi-image (folder) rows keep using the existing URL-based path.
+      const isDirectSingleImage = row.imageSourceType === 'direct' && row.images?.length === 1;
+      let imageBlob;
+      if (isDirectSingleImage) {
+        try {
+          setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posting', message: 'Downloading image…' } }));
+          imageBlob = await fetchImageBlob(row.images[0]);
+        } catch (e) {
+          setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: e.message } }));
+          continue;
+        }
+      }
       try {
         if (isImmediate) {
           const res = await publishToPage({
             pageId: fb.pageId,
             pageAccessToken: fb.pageAccessToken,
             message: row.caption,
-            imageUrls: row.images && row.images.length > 0 ? row.images : undefined,
+            imageBlob,
+            imageUrls: !imageBlob && row.images && row.images.length > 0 ? row.images : undefined,
           });
           await savePost(user.uid, {
             caption: row.caption,
@@ -384,7 +452,8 @@ export default function SheetImport() {
             pageAccessToken: fb.pageAccessToken,
             message: row.caption,
             publishTimeUnix: publishAt,
-            imageUrls: row.images && row.images.length > 0 ? row.images : undefined,
+            imageBlob,
+            imageUrls: !imageBlob && row.images && row.images.length > 0 ? row.images : undefined,
           });
           await savePost(user.uid, {
             caption: row.caption,
@@ -481,9 +550,10 @@ export default function SheetImport() {
             Share the sheet as <strong>Anyone with the link — Viewer</strong>, then paste its link below. Put a
             header row on top with columns like <strong>Caption</strong> and <strong>Image Link</strong> — if no
             headers match, column A is used as the caption and column B as the image link. The image link can be a
-            direct image URL, a Google Drive file link, or a Drive <strong>folder</strong> link (every image inside
-            it becomes one multi-photo post — needs a Drive API key in Connect profile). Wrap words in{' '}
-            <strong>**double asterisks**</strong> to make them bold.
+            direct image URL from anywhere on the internet (downloaded and uploaded to Facebook directly, so
+            hotlink-protected sites still work), a Google Drive file link, or a Drive <strong>folder</strong> link
+            (every image inside it becomes one multi-photo post — needs a Drive API key in Connect profile). Wrap
+            words in <strong>**double asterisks**</strong> to make them bold.
           </p>
 
           {sources.length > 1 && (
@@ -523,10 +593,27 @@ export default function SheetImport() {
               onChange={(e) => setSheetInput(e.target.value)}
               placeholder="https://docs.google.com/spreadsheets/d/…"
             />
+            {detectingTabs && <p className="field-hint" style={{ marginTop: 6 }}>Detecting sheet…</p>}
+            {!detectingTabs && sheetTitle && (
+              <p className="field-hint" style={{ marginTop: 6 }}>
+                Sheet: <strong>{sheetTitle}</strong>
+              </p>
+            )}
+            {!detectingTabs && detectError && (
+              <p className="field-hint" style={{ marginTop: 6 }}>{detectError}</p>
+            )}
           </div>
           <div className="field">
-            <label>Tab name (optional — leave blank for the first tab)</label>
-            <input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="e.g. Sheet1" />
+            <label>Tab {sheetTabs.length > 0 ? '' : '(optional — leave blank for the first tab)'}</label>
+            {sheetTabs.length > 0 ? (
+              <select value={sheetName} onChange={(e) => setSheetName(e.target.value)}>
+                {sheetTabs.map((t) => (
+                  <option key={t.gid} value={t.title}>{t.title}</option>
+                ))}
+              </select>
+            ) : (
+              <input value={sheetName} onChange={(e) => setSheetName(e.target.value)} placeholder="e.g. Sheet1" />
+            )}
           </div>
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <button className="btn btn-primary" onClick={doFetch} disabled={fetching || !sheetInput.trim()}>

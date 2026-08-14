@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useAuth } from '../context/auth-context';
 import { fetchManagedPages, exchangeForLongLivedToken } from '../services/facebook';
+import {
+  requestAuthorizationCode,
+  exchangeCodeForTokens,
+  fetchOwnChannel,
+  oauthRedirectUri,
+} from '../services/youtube';
 import TallyDot from '../components/tally-dot';
 
 function genId() {
@@ -12,6 +18,7 @@ export default function Settings() {
   const connectedPages = profile?.pages || [];
 
   const [userToken, setUserToken] = useState('');
+  const [connectAppCredId, setConnectAppCredId] = useState(null);
   const [foundPages, setFoundPages] = useState([]);
   const [loadingPages, setLoadingPages] = useState(false);
   const [fbError, setFbError] = useState('');
@@ -27,6 +34,7 @@ export default function Settings() {
   const [showAddTokenForm, setShowAddTokenForm] = useState(false);
   const [newTokenLabel, setNewTokenLabel] = useState('');
   const [newTokenValue, setNewTokenValue] = useState('');
+  const [newTokenAppCredId, setNewTokenAppCredId] = useState(null);
   const [savingToken, setSavingToken] = useState(false);
   const [tokenActionError, setTokenActionError] = useState('');
   const [reconnectingId, setReconnectingId] = useState(null);
@@ -61,6 +69,69 @@ export default function Settings() {
   const [driveError, setDriveError] = useState('');
   const [showDriveGuide, setShowDriveGuide] = useState(false);
 
+  // YouTube — OAuth Client ID/Secret pasted once, then a popup consent flow
+  // exchanges an authorization code for a refresh_token that's stored on the
+  // profile (same trust model as the Facebook App ID/Secret above).
+  const youtube = profile?.youtube || null;
+  const [ytClientId, setYtClientId] = useState(youtube?.clientId || '');
+  const [ytClientSecret, setYtClientSecret] = useState(youtube?.clientSecret || '');
+  const [showYtCredsForm, setShowYtCredsForm] = useState(false);
+  const [ytCredsSaved, setYtCredsSaved] = useState(false);
+  const [showYtGuide, setShowYtGuide] = useState(false);
+  const [ytConnecting, setYtConnecting] = useState(false);
+  const [ytError, setYtError] = useState('');
+  const hasYtCreds = Boolean((youtube?.clientId || '').trim() && (youtube?.clientSecret || '').trim());
+
+  const saveYtCreds = async () => {
+    setYtError('');
+    try {
+      await updateProfile({ youtube: { ...(youtube || {}), clientId: ytClientId.trim(), clientSecret: ytClientSecret.trim() } });
+      setYtCredsSaved(true);
+      setTimeout(() => setYtCredsSaved(false), 2500);
+    } catch (e) {
+      console.error('Failed to save YouTube OAuth credentials:', e);
+      setYtError('Could not save those. Please try again.');
+    }
+  };
+
+  const connectYoutube = async () => {
+    const clientId = (youtube?.clientId || ytClientId).trim();
+    const clientSecret = (youtube?.clientSecret || ytClientSecret).trim();
+    if (!clientId || !clientSecret) {
+      setYtError('Add your OAuth Client ID and Secret first.');
+      return;
+    }
+    setYtError('');
+    setYtConnecting(true);
+    try {
+      const code = await requestAuthorizationCode(clientId);
+      const tokens = await exchangeCodeForTokens(code, clientId, clientSecret);
+      const channel = await fetchOwnChannel(tokens.accessToken);
+      await updateProfile({
+        youtube: {
+          clientId,
+          clientSecret,
+          refreshToken: tokens.refreshToken,
+          accessToken: tokens.accessToken,
+          expiresAt: tokens.expiresAt,
+          ...channel,
+          connectedAt: Date.now(),
+        },
+      });
+      setShowYtCredsForm(false);
+    } catch (e) {
+      console.error('Failed to connect YouTube:', e);
+      setYtError(e.message);
+    } finally {
+      setYtConnecting(false);
+    }
+  };
+
+  const disconnectYoutube = async () => {
+    if (!confirm('Disconnect this YouTube channel? You can reconnect any time.')) return;
+    await updateProfile({ youtube: { clientId: youtube?.clientId || '', clientSecret: youtube?.clientSecret || '' } });
+  };
+
   // Update #12 — "reconnect again and again" was happening because tokens
   // were never actually extended to be long-lived, despite the guide below
   // claiming they were. A token pasted straight from Graph API Explorer is
@@ -71,37 +142,106 @@ export default function Settings() {
   // the token), every token gets exchanged for Facebook's long-lived
   // version (~60 days, and Page tokens derived from it effectively never
   // expire) automatically before it's used or saved.
-  const [fbAppId, setFbAppId] = useState(profile?.fbAppId || '');
-  const [fbAppSecret, setFbAppSecret] = useState(profile?.fbAppSecret || '');
-  const [appCredsSaved, setAppCredsSaved] = useState(false);
-  const [appCredsError, setAppCredsError] = useState('');
-  const [showAppCredsForm, setShowAppCredsForm] = useState(false);
-  const hasAppCreds = Boolean((profile?.fbAppId || '').trim() && (profile?.fbAppSecret || '').trim());
+  //
+  // Update #13 — more than one Facebook App ID/Secret can be saved. Pages
+  // often come from different Facebook developer apps/accounts, and a
+  // token can only be extended by the app it was actually generated on —
+  // using the wrong App ID/Secret pair fails the exchange. Each saved token
+  // now remembers which App credential entry to use.
+  const fbApps = profile?.fbApps || [];
+  const hasAppCreds = fbApps.length > 0;
 
-  const saveAppCreds = async () => {
+  // One-time migration: fold the old single fbAppId/fbAppSecret fields into
+  // the new fbApps list so nobody upgrading loses their saved credentials.
+  useEffect(() => {
+    if (!profile) return;
+    if ((profile.fbAppId || '').trim() && (!profile.fbApps || profile.fbApps.length === 0)) {
+      const migrated = [{
+        id: genId(),
+        label: 'Default',
+        appId: profile.fbAppId.trim(),
+        appSecret: (profile.fbAppSecret || '').trim(),
+        createdAt: 0,
+      }];
+      updateProfile({ fbApps: migrated, fbAppId: '', fbAppSecret: '' }).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
+
+  const [showAddAppForm, setShowAddAppForm] = useState(false);
+  const [newAppLabel, setNewAppLabel] = useState('');
+  const [newAppId, setNewAppId] = useState('');
+  const [newAppSecret, setNewAppSecret] = useState('');
+  const [appCredsError, setAppCredsError] = useState('');
+  const [editingAppId, setEditingAppId] = useState(null);
+  const [editingAppIdValue, setEditingAppIdValue] = useState('');
+  const [editingAppSecretValue, setEditingAppSecretValue] = useState('');
+
+  const addAppCreds = async () => {
     setAppCredsError('');
+    if (!newAppId.trim() || !newAppSecret.trim()) return;
     try {
-      await updateProfile({ fbAppId: fbAppId.trim(), fbAppSecret: fbAppSecret.trim() });
-      setAppCredsSaved(true);
-      setTimeout(() => setAppCredsSaved(false), 2500);
+      const entry = {
+        id: genId(),
+        label: newAppLabel.trim() || `App ${fbApps.length + 1}`,
+        appId: newAppId.trim(),
+        appSecret: newAppSecret.trim(),
+        createdAt: Date.now(),
+      };
+      await updateProfile({ fbApps: [...fbApps, entry] });
+      setNewAppLabel('');
+      setNewAppId('');
+      setNewAppSecret('');
+      setShowAddAppForm(false);
     } catch (e) {
       console.error('Failed to save Facebook App credentials:', e);
       setAppCredsError('Could not save those. Please try again.');
     }
   };
 
-  // Runs a pasted token through the long-lived exchange when App
-  // credentials are on file. Never blocks the connect flow if the exchange
-  // fails — falls back to the raw token and just flags that it's short-lived.
-  const extendToken = async (rawToken) => {
-    const appId = (profile?.fbAppId || '').trim();
-    const appSecret = (profile?.fbAppSecret || '').trim();
-    if (!appId || !appSecret) return { token: rawToken, extended: false };
+  const updateAppCreds = async (appEntry) => {
+    setAppCredsError('');
+    if (!editingAppIdValue.trim() || !editingAppSecretValue.trim()) return;
     try {
-      const longLived = await exchangeForLongLivedToken(rawToken, appId, appSecret);
-      return { token: longLived, extended: true };
+      const next = fbApps.map((a) =>
+        a.id === appEntry.id ? { ...a, appId: editingAppIdValue.trim(), appSecret: editingAppSecretValue.trim() } : a
+      );
+      await updateProfile({ fbApps: next });
+      setEditingAppId(null);
     } catch (e) {
-      return { token: rawToken, extended: false, warning: `Connected, but couldn't extend this token's lifetime (${e.message}) — it may expire sooner than usual.` };
+      console.error('Failed to update Facebook App credentials:', e);
+      setAppCredsError('Could not save those. Please try again.');
+    }
+  };
+
+  const removeAppCreds = async (appEntry) => {
+    const usedBy = savedTokens.filter((t) => t.appCredId === appEntry.id);
+    if (!confirm(`Remove "${appEntry.label}"?${usedBy.length > 0 ? ` ${usedBy.length} saved token(s) using it will stop auto-extending until you pick a different app for them.` : ''}`)) return;
+    try {
+      await updateProfile({ fbApps: fbApps.filter((a) => a.id !== appEntry.id) });
+    } catch (e) {
+      console.error('Failed to remove Facebook App credentials:', e);
+    }
+  };
+
+  // Runs a pasted token through the long-lived exchange using a specific
+  // saved App credential entry (falls back to the only saved entry when
+  // there's just one, or to the entry the token was originally saved
+  // against). Never blocks the connect flow if the exchange fails — falls
+  // back to the raw token and just flags that it's short-lived.
+  const extendToken = async (rawToken, appCredId) => {
+    const app = fbApps.find((a) => a.id === appCredId) || fbApps[0] || null;
+    if (!app) return { token: rawToken, extended: false, appCredId: appCredId || null };
+    try {
+      const longLived = await exchangeForLongLivedToken(rawToken, app.appId, app.appSecret);
+      return { token: longLived, extended: true, appCredId: app.id };
+    } catch (e) {
+      return {
+        token: rawToken,
+        extended: false,
+        appCredId: app.id,
+        warning: `Connected, but couldn't extend this token's lifetime with "${app.label}" (${e.message}) — it may expire sooner than usual.`,
+      };
     }
   };
 
@@ -133,7 +273,7 @@ export default function Settings() {
     setLoadingPages(true);
     setFoundPages([]);
     try {
-      const { token: workingToken, warning } = await extendToken(token);
+      const { token: workingToken, warning } = await extendToken(token, connectAppCredId);
       const result = await fetchManagedPages(workingToken);
       if (result.length === 0) setFbError('That token worked, but no Pages were found for it.');
       else if (warning) setFbError(warning);
@@ -154,7 +294,7 @@ export default function Settings() {
     setTokenActionError('');
     setSavingToken(true);
     try {
-      const { token: workingToken, warning } = await extendToken(token);
+      const { token: workingToken, warning, appCredId } = await extendToken(token, newTokenAppCredId);
       const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError('That token worked, but no Pages were found for it.');
@@ -166,11 +306,13 @@ export default function Settings() {
         label: newTokenLabel.trim() || `Token ${savedTokens.length + 1}`,
         token: workingToken,
         pageIds: result.map((p) => p.id),
+        appCredId: appCredId || null,
         savedAt: Date.now(),
       };
       await updateProfile({ fbUserTokens: [...savedTokens, entry] });
       setNewTokenLabel('');
       setNewTokenValue('');
+      setNewTokenAppCredId(null);
       setShowAddTokenForm(false);
       if (warning) setTokenActionError(warning);
       setReconnectResult({ id: entry.id, count: result.length });
@@ -189,7 +331,7 @@ export default function Settings() {
     setTokenActionError('');
     setReconnectingId(tokenEntry.id);
     try {
-      const { token: workingToken, warning } = await extendToken(tokenEntry.token);
+      const { token: workingToken, warning } = await extendToken(tokenEntry.token, tokenEntry.appCredId);
       const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError(`"${tokenEntry.label}" didn't return any Pages — it may have expired. Update it below.`);
@@ -223,7 +365,7 @@ export default function Settings() {
     setTokenActionError('');
     setReconnectingId(tokenEntry.id);
     try {
-      const { token: workingToken, warning } = await extendToken(token);
+      const { token: workingToken, warning } = await extendToken(token, tokenEntry.appCredId);
       const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError('That token worked, but no Pages were found for it.');
@@ -285,7 +427,7 @@ export default function Settings() {
       await mergePagesIntoProfile(foundPages);
       const rawToken = userToken.trim();
       if (rawToken) {
-        const { token: workingToken } = await extendToken(rawToken);
+        const { token: workingToken, appCredId } = await extendToken(rawToken, connectAppCredId);
         const alreadySaved = savedTokens.some((t) => t.token === workingToken || t.token === rawToken);
         if (!alreadySaved) {
           const entry = {
@@ -293,6 +435,7 @@ export default function Settings() {
             label: `Token ${savedTokens.length + 1}`,
             token: workingToken,
             pageIds: foundPages.map((p) => p.id),
+            appCredId: appCredId || null,
             savedAt: Date.now(),
           };
           await updateProfile({ fbUserTokens: [...savedTokens, entry] });
@@ -300,6 +443,7 @@ export default function Settings() {
       }
       setFoundPages([]);
       setUserToken('');
+      setConnectAppCredId(null);
       setShowConnectForm(false);
     } catch (e) {
       console.error('Failed to connect pages:', e);
@@ -356,45 +500,98 @@ export default function Settings() {
           <TallyDot status={connectedPages.length > 0 ? 'live' : 'idle'} />
         </div>
 
-        {/* Update #12 — App credentials, used to keep tokens from expiring. */}
+        {/* Update #12/#13 — App credentials, used to keep tokens from expiring.
+            More than one can be saved since different Pages often come from
+            different Facebook developer apps/accounts. */}
         <div className={`app-creds-box ${hasAppCreds ? 'app-creds-box-ok' : ''}`}>
           <div className="app-creds-box-head">
             <span>
               {hasAppCreds ? '✓ Tokens are set to stay connected' : '⚠ Tokens expire in ~1-2 hours right now'}
             </span>
-            {hasAppCreds && <span className="badge badge-ok">Configured</span>}
+            {hasAppCreds && <span className="badge badge-ok">{fbApps.length} saved</span>}
           </div>
           <p className="field-hint" style={{ margin: '6px 0 0' }}>
             {hasAppCreds
-              ? "Every token gets extended to Facebook's long-lived version (~60 days, Page tokens effectively don't expire) automatically when you connect or reconnect."
-              : "Add your Facebook App ID + Secret (from the same developer app you use to generate a token below) once, and Social Manager will automatically extend every token so you stop needing to reconnect so often."}
+              ? "Every token gets extended to Facebook's long-lived version (~60 days, Page tokens effectively don't expire) automatically when you connect or reconnect. Save one App ID/Secret per Facebook app you generate tokens from."
+              : 'Add a Facebook App ID + Secret (from the developer app you use to generate a token below), and Social Manager will automatically extend every token so you stop needing to reconnect so often. Add more than one if your Pages come from different Facebook apps or accounts.'}
           </p>
-          {!showAppCredsForm ? (
-            <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setShowAppCredsForm(true)}>
-              {hasAppCreds ? 'Update App ID / Secret' : '+ Add App ID / Secret'}
+
+          {fbApps.length > 0 && (
+            <div className="token-list" style={{ marginTop: 10 }}>
+              {fbApps.map((a) => {
+                const isEditing = editingAppId === a.id;
+                return (
+                  <div key={a.id} className="token-row">
+                    <div className="token-row-top">
+                      <span className="token-row-label">{a.label}</span>
+                    </div>
+                    {isEditing ? (
+                      <div style={{ marginTop: 8 }}>
+                        <div className="field">
+                          <label>App ID</label>
+                          <input value={editingAppIdValue} onChange={(e) => setEditingAppIdValue(e.target.value)} placeholder="e.g. 1234567890123456" />
+                        </div>
+                        <div className="field">
+                          <label>App Secret</label>
+                          <input type="password" value={editingAppSecretValue} onChange={(e) => setEditingAppSecretValue(e.target.value)} placeholder="From Settings → Basic on your Facebook app" />
+                        </div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <button className="btn btn-primary btn-sm" onClick={() => updateAppCreds(a)} disabled={!editingAppIdValue.trim() || !editingAppSecretValue.trim()}>
+                            Save
+                          </button>
+                          <button className="btn btn-ghost btn-sm" onClick={() => setEditingAppId(null)}>Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="field-hint mono token-row-value">App ID: {a.appId}</div>
+                        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            onClick={() => { setEditingAppId(a.id); setEditingAppIdValue(a.appId); setEditingAppSecretValue(a.appSecret); }}
+                          >
+                            Edit
+                          </button>
+                          <button className="btn btn-danger btn-sm" onClick={() => removeAppCreds(a)}>Remove</button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {!showAddAppForm ? (
+            <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setShowAddAppForm(true)}>
+              + Add {fbApps.length > 0 ? 'another' : ''} App ID / Secret
             </button>
           ) : (
             <div style={{ marginTop: 10 }}>
               <div className="field">
+                <label>Label (optional)</label>
+                <input value={newAppLabel} onChange={(e) => setNewAppLabel(e.target.value)} placeholder="e.g. Agriculture app" />
+              </div>
+              <div className="field">
                 <label>App ID</label>
-                <input value={fbAppId} onChange={(e) => setFbAppId(e.target.value)} placeholder="e.g. 1234567890123456" />
+                <input value={newAppId} onChange={(e) => setNewAppId(e.target.value)} placeholder="e.g. 1234567890123456" />
               </div>
               <div className="field">
                 <label>App Secret</label>
                 <input
                   type="password"
-                  value={fbAppSecret}
-                  onChange={(e) => setFbAppSecret(e.target.value)}
+                  value={newAppSecret}
+                  onChange={(e) => setNewAppSecret(e.target.value)}
                   placeholder="From Settings → Basic on your Facebook app"
                 />
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
-                <button className="btn btn-primary btn-sm" onClick={saveAppCreds} disabled={!fbAppId.trim() || !fbAppSecret.trim()}>
-                  {appCredsSaved ? 'Saved ✓' : 'Save'}
+                <button className="btn btn-primary btn-sm" onClick={addAppCreds} disabled={!newAppId.trim() || !newAppSecret.trim()}>
+                  Save
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => { setShowAppCredsForm(false); setFbAppId(profile?.fbAppId || ''); setFbAppSecret(profile?.fbAppSecret || ''); setAppCredsError(''); }}
+                  onClick={() => { setShowAddAppForm(false); setNewAppLabel(''); setNewAppId(''); setNewAppSecret(''); setAppCredsError(''); }}
                 >
                   Cancel
                 </button>
@@ -441,6 +638,16 @@ export default function Settings() {
                   {loadingPages ? 'Looking…' : 'Find pages'}
                 </button>
               </div>
+              {fbApps.length > 1 && (
+                <div style={{ marginTop: 8 }}>
+                  <label>App credentials to extend this token with</label>
+                  <select value={connectAppCredId || ''} onChange={(e) => setConnectAppCredId(e.target.value || null)}>
+                    {fbApps.map((a) => (
+                      <option key={a.id} value={a.id}>{a.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <p className="field-hint" style={{ marginTop: 6 }}>
                 This token gets saved once it works, so you won't need to paste it again — reconnect or refresh its
                 Pages from the "Saved tokens" list below any time.
@@ -522,6 +729,11 @@ export default function Settings() {
                         {tokenPageCount} page{tokenPageCount === 1 ? '' : 's'}
                       </span>
                     </div>
+                    {fbApps.length > 1 && (
+                      <div className="field-hint" style={{ marginTop: 2 }}>
+                        App: {fbApps.find((a) => a.id === t.appCredId)?.label || 'Not set — using the first saved app'}
+                      </div>
+                    )}
                     <div className="field-hint mono token-row-value">
                       {t.token.slice(0, 20)}…{t.token.slice(-8)}
                     </div>
@@ -596,13 +808,23 @@ export default function Settings() {
                   style={{ minHeight: 56, fontFamily: 'monospace', fontSize: 12 }}
                 />
               </div>
+              {fbApps.length > 1 && (
+                <div className="field">
+                  <label>App credentials to extend this token with</label>
+                  <select value={newTokenAppCredId || ''} onChange={(e) => setNewTokenAppCredId(e.target.value || null)}>
+                    {fbApps.map((a) => (
+                      <option key={a.id} value={a.id}>{a.label}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div style={{ display: 'flex', gap: 8 }}>
                 <button className="btn btn-primary btn-sm" onClick={addToken} disabled={savingToken || !newTokenValue.trim()}>
                   {savingToken ? 'Saving…' : 'Save & connect its pages'}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
-                  onClick={() => { setShowAddTokenForm(false); setNewTokenLabel(''); setNewTokenValue(''); setTokenActionError(''); }}
+                  onClick={() => { setShowAddTokenForm(false); setNewTokenLabel(''); setNewTokenValue(''); setNewTokenAppCredId(null); setTokenActionError(''); }}
                 >
                   Cancel
                 </button>
@@ -742,6 +964,137 @@ export default function Settings() {
             )}
       </div>
 
+      {/* YouTube connect */}
+      <div className="card page-card">
+        <div className="settings-block-head">
+          <h3>YouTube channel</h3>
+          <TallyDot status={youtube?.refreshToken ? 'live' : 'idle'} />
+        </div>
+        <p className="field-hint" style={{ margin: '6px 0 14px' }}>
+          Lets you upload videos manually or from a Google Sheet, straight from this browser —
+          uploads stream directly to YouTube, so there's no size limit besides your own connection.
+        </p>
+
+        {youtube?.refreshToken ? (
+          <div className="channel-card" style={{ marginBottom: 12 }}>
+            {youtube.avatar && <img src={youtube.avatar} alt="" className="channel-card-avatar" />}
+            <div className="channel-card-info">
+              <div className="channel-card-name">
+                {youtube.title}
+                <TallyDot status="live" />
+              </div>
+              <div className="field-hint mono">
+                {youtube.subscriberCount != null ? `${Number(youtube.subscriberCount).toLocaleString()} subscribers` : 'YouTube channel'}
+              </div>
+            </div>
+            <div className="channel-card-actions">
+              <button className="btn btn-ghost btn-sm" onClick={connectYoutube} disabled={ytConnecting}>
+                {ytConnecting ? 'Reconnecting…' : 'Reconnect'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={disconnectYoutube}>Disconnect</button>
+            </div>
+          </div>
+        ) : (
+          <div className={`app-creds-box ${hasYtCreds ? 'app-creds-box-ok' : ''}`}>
+            <div className="app-creds-box-head">
+              <span>{hasYtCreds ? '✓ OAuth credentials on file' : '⚠ No OAuth credentials yet'}</span>
+              {hasYtCreds && <span className="badge badge-ok">Configured</span>}
+            </div>
+            <p className="field-hint" style={{ margin: '6px 0 0' }}>
+              {hasYtCreds
+                ? 'Credentials are saved — click Connect to sign in with Google and pick the channel to publish to.'
+                : 'Add an OAuth Client ID + Secret from Google Cloud Console once (guide below), then connect your channel.'}
+            </p>
+            {!showYtCredsForm ? (
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 10 }} onClick={() => setShowYtCredsForm(true)}>
+                {hasYtCreds ? 'Update Client ID / Secret' : '+ Add Client ID / Secret'}
+              </button>
+            ) : (
+              <div style={{ marginTop: 10 }}>
+                <div className="field">
+                  <label>OAuth Client ID</label>
+                  <input value={ytClientId} onChange={(e) => setYtClientId(e.target.value)} placeholder="e.g. 1234-abc.apps.googleusercontent.com" />
+                </div>
+                <div className="field">
+                  <label>OAuth Client secret</label>
+                  <input
+                    type="password"
+                    value={ytClientSecret}
+                    onChange={(e) => setYtClientSecret(e.target.value)}
+                    placeholder="From the same OAuth Client on Google Cloud Console"
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <button className="btn btn-primary btn-sm" onClick={saveYtCreds} disabled={!ytClientId.trim() || !ytClientSecret.trim()}>
+                    {ytCredsSaved ? 'Saved ✓' : 'Save'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={() => { setShowYtCredsForm(false); setYtClientId(youtube?.clientId || ''); setYtClientSecret(youtube?.clientSecret || ''); setYtError(''); }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {hasYtCreds && (
+          <button className="btn btn-accent" style={{ marginTop: 12 }} onClick={connectYoutube} disabled={ytConnecting}>
+            {ytConnecting ? 'Connecting…' : youtube?.refreshToken ? 'Reconnect channel' : 'Connect YouTube channel'}
+          </button>
+        )}
+        {ytError && <div className="field-error" style={{ marginTop: 8 }}>{ytError}</div>}
+
+        <button className="link-toggle" onClick={() => setShowYtGuide((v) => !v)}>
+          {showYtGuide ? 'Hide guide' : 'How do I get a Client ID / Secret?'}
+        </button>
+        {showYtGuide && (
+          <div className="guide-panel">
+            <p className="field-hint" style={{ margin: '2px 0 10px', fontWeight: 600 }}>
+              Takes about 5 minutes, free — no billing required for this usage level.
+            </p>
+            <ol className="guide-list">
+              <li>
+                Go to <strong>console.cloud.google.com</strong>, sign in, and create a new project
+                (or reuse the one your Gemini/Drive keys live in).
+              </li>
+              <li>
+                Search for <strong>YouTube Data API v3</strong> and click <strong>Enable</strong>.
+              </li>
+              <li>
+                Go to <strong>APIs & Services → OAuth consent screen</strong>. Choose{' '}
+                <strong>External</strong>, fill in an app name + your email, and under{' '}
+                <strong>Test users</strong> add your own Google account (the one that owns your
+                YouTube channel). This keeps the app in "Testing" mode, which is fine — it never
+                needs Google's review for personal use like this.
+              </li>
+              <li>
+                Go to <strong>APIs & Services → Credentials → + Create Credentials → OAuth client
+                ID</strong>. Application type: <strong>Web application</strong>.
+              </li>
+              <li>
+                Under <strong>Authorized JavaScript origins</strong>, add{' '}
+                <code>{window.location.origin}</code>. Under <strong>Authorized redirect
+                URIs</strong>, add <code>{oauthRedirectUri()}</code> exactly. Click Create.
+              </li>
+              <li>
+                Copy the <strong>Client ID</strong> and <strong>Client secret</strong> shown, paste
+                them into the boxes above, click <strong>Save</strong>, then <strong>Connect
+                YouTube channel</strong> and approve access with the Google account from step 3.
+              </li>
+            </ol>
+            <p className="field-hint" style={{ marginTop: 10 }}>
+              <strong>"Access blocked: app not verified":</strong> means the Google account you're
+              signing in with wasn't added as a Test user in step 3 — go back and add it.
+            </p>
+            <p className="field-hint">
+              <strong>Large videos:</strong> uploads stream in chunks straight from your browser to
+              YouTube, so file size isn't limited by this app — only by your own upload speed and
+              keeping the tab open until it finishes.
+            </p>
+          </div>
+        )}
+      </div>
+
       {/* Gemini key */}
       <div className="card page-card">
         <div className="settings-block-head">
@@ -823,9 +1176,11 @@ export default function Settings() {
           <TallyDot status={profile?.driveApiKey ? 'live' : 'idle'} />
         </div>
         <p className="field-hint" style={{ margin: '6px 0 14px' }}>
-          Optional — only needed if a sheet's Image Link column ever points at a Drive{' '}
-          <strong>folder</strong> instead of a single image, so Social Manager can list every image
-          inside it and post them together. A single Drive file link works automatically without this.
+          Optional. Needed if a sheet's Image Link column ever points at a Drive <strong>folder</strong>{' '}
+          instead of a single image, so Social Manager can list every image inside it and post them
+          together — a single Drive file link works automatically without this. Also used to
+          auto-detect a sheet's real title and tab names on the Post from Google Sheet page (needs the{' '}
+          <strong>Google Sheets API</strong> enabled too — see the guide below).
         </p>
         <div className="field">
           <div style={{ display: 'flex', gap: 8 }}>
@@ -856,7 +1211,8 @@ export default function Settings() {
               </li>
               <li>
                 In the search bar at the top, search for <strong>Google Drive API</strong>, open it,
-                and click <strong>Enable</strong>.
+                and click <strong>Enable</strong>. Repeat the same search-and-enable for{' '}
+                <strong>Google Sheets API</strong> if you want sheet titles/tabs auto-detected too.
               </li>
               <li>
                 Go to <strong>APIs & Services → Credentials</strong>, click{' '}
@@ -865,8 +1221,9 @@ export default function Settings() {
               <li>
                 Click <strong>Edit API key</strong> (or find it in the credentials list and click it)
                 and, under <strong>API restrictions</strong>, choose <strong>Restrict key</strong> and
-                check only <strong>Google Drive API</strong>. This keeps the key from being usable for
-                anything else if it ever leaks. Save.
+                check <strong>Google Drive API</strong> (and <strong>Google Sheets API</strong> if you
+                enabled it). This keeps the key from being usable for anything else if it ever leaks.
+                Save.
               </li>
               <li>Copy the key and paste it into the box above, then click <strong>Save</strong>.</li>
             </ol>

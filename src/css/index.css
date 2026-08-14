@@ -773,3 +773,64 @@ p { margin: 0; }
   color: #fff; display: flex; align-items: center; justify-content: center;
   font-size: 20px; font-weight: 700;
 }
+
+/* ---- YouTube: upload progress + video queue rows ---- */
+.progress-track {
+  width: 100%;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+  margin: 8px 0;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(135deg, var(--accent), #4d5ff0);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+.dropzone {
+  border: 1.5px dashed var(--line);
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.dropzone:hover, .dropzone-active { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px 14px;
+}
+.yt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.yt-row-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  color: var(--ink-faint);
+  flex-shrink: 0;
+}
+.yt-row-text { flex: 1; min-width: 0; }
+.yt-row-title { font-weight: 600; font-size: 13.5px; }
+.yt-row-title, .yt-row-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.yt-row-desc { font-size: 12px; color: var(--ink-faint); margin-top: 2px; }

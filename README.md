@@ -8,7 +8,7 @@ images — all on free tiers. Preview before you publish, and post now or save a
 
 - **Login + profile** — real accounts via Firebase Auth (email/password), simple one-time profile (name + avatar)
 - **Connect profile** — paste a Facebook Page token once, Social Manager finds your pages and connects the one you pick
-- **Home** — platform tabs (Facebook live, Instagram/YouTube reserved for later), shows your connected page with name + photo, recent activity
+- **Home** — platform tabs (Facebook and YouTube live, Instagram reserved for later), shows your connected page/channel with name + photo, recent activity
 - **Create post**
   - **Manually** — caption + photo upload, live Facebook-style preview
   - **AI agent** — two modes:
@@ -28,13 +28,54 @@ images — all on free tiers. Preview before you publish, and post now or save a
   numbered, click-to-preview queue, pick a posting interval (30 min up to custom hours), and approve the batch.
   The first post can go out immediately; every post after that is scheduled directly on Facebook's own servers
   at `now + n × interval`, so they publish on time even if you close the browser. Image links can be direct
-  URLs, single Google Drive files, or Drive folders (posted as one multi-photo post). Captions support
+  URLs from anywhere on the internet (downloaded in the browser and uploaded to Facebook directly, so
+  hotlink-protected sites still work), single Google Drive files, or Drive folders (posted as one multi-photo
+  post). The sheet's real title and tab names are auto-detected (needs the Drive API key below, with the
+  Sheets API also enabled) so you can pick the tab from a dropdown instead of typing it. Captions support
   **bold** text via a toolbar button or `**double asterisks**` in the sheet. See "Post from Google Sheet"
   below for the sheet-sharing requirement.
 - **Broadcast log** — every draft and posted item, with "continue editing" for drafts
-- **Settings** — manage your Facebook connection and Gemini API key, with built-in guides for getting both
+- **Settings** — manage your Facebook connections (multiple Pages, multiple saved tokens, and multiple
+  App ID/Secret pairs for tokens that come from different Facebook apps/accounts), Gemini API key, Drive API
+  key, and YouTube OAuth — with built-in guides for each
 
-## Why images only (no video, for now)
+## YouTube
+
+Sidebar -> **Upload video** (manual) and **Videos from sheet** (batch, from a Google Sheet).
+
+### Connect your channel
+Settings -> Connect profile -> **YouTube channel** has a built-in guide, in short:
+1. console.cloud.google.com -> create/reuse a project -> enable **YouTube Data API v3**.
+2. APIs & Services -> OAuth consent screen -> External -> add your own Google account under **Test users**.
+3. APIs & Services -> Credentials -> Create Credentials -> OAuth client ID -> **Web application**.
+4. Add your site's origin under Authorized JavaScript origins, and `<your-site>/oauth-callback.html` under
+   Authorized redirect URIs.
+5. Paste the Client ID + Secret into Social Manager, click **Save**, then **Connect YouTube channel** and
+   approve access with the Google account that owns your channel.
+
+Uploads stream in chunks straight from your browser to YouTube using the resumable upload protocol, so
+there's no app-side size limit — only your own upload speed, and the tab needs to stay open until an
+upload finishes (unlike Facebook, YouTube has no API for uploading from a URL on its own servers, so the
+bytes always have to move through this browser).
+
+### Upload video (manual)
+Pick a file, fill in title/description/tags/category/visibility, optionally set a future date to have
+YouTube itself flip it public later (`publishAt`), and upload. A custom thumbnail can be attached too
+(requires a phone-verified channel on YouTube's side).
+
+### Videos from sheet
+Same idea as Post from Google Sheet, adapted for video:
+1. Share the sheet as **Anyone with the link — Viewer**, with header columns **Title**, **Description**,
+   and **Video Link** (a single Google Drive file link per row, shared the same way — a Drive API key is
+   needed in Connect profile, same one used for image folders).
+2. Fetch rows, set an interval, and choose whether the first video should go public immediately.
+3. Click **Start upload** — videos upload one at a time in this tab (their bytes have to move through the
+   browser), but *going public* is still spaced out using YouTube's own `publishAt`, the same way Facebook's
+   queue spaces out post times.
+4. Re-fetching is safe (already-uploaded rows are skipped), and **Repeat from the top** starts a fresh loop
+   once every row has gone out.
+
+## Why images only for Facebook AI generation (no video, for now)
 
 Google's Gemini free tier does **not** include video generation — the video model (Veo) requires
 billing to be enabled, with no free quota. Everything else here (text suggestions, captions, and

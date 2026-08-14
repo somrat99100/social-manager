@@ -132,7 +132,7 @@ export async function checkPostStatus(postId, pageAccessToken) {
  * `imageUrls` are direct links to publicly hosted images — Facebook fetches
  * them server-side, so nothing needs to be downloaded into the browser first.
  */
-export async function publishToPage({ pageId, pageAccessToken, message, imageBase64, imageUrl, imageUrls }) {
+export async function publishToPage({ pageId, pageAccessToken, message, imageBase64, imageBlob, imageUrl, imageUrls }) {
   const urls = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
 
   if (urls.length > 1) {
@@ -154,9 +154,14 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
     return { id: data.id };
   }
 
-  if (imageBase64 || urls[0]) {
+  if (imageBase64 || imageBlob || urls[0]) {
     const form = new FormData();
-    if (imageBase64) {
+    if (imageBlob) {
+      // A Blob already downloaded into the browser (e.g. a sheet row's
+      // internet image link fetched client-side rather than left for
+      // Facebook's server to fetch by URL — see fetchImageBlob in sheets.js).
+      form.append('source', imageBlob, 'post-image.jpg');
+    } else if (imageBase64) {
       const blob = base64ToBlob(imageBase64, 'image/png');
       form.append('source', blob, 'post-image.png');
     } else {
@@ -186,7 +191,7 @@ export async function publishToPage({ pageId, pageAccessToken, message, imageBas
  * for a single-photo post, or `imageUrls` (2+) for a multi-photo post —
  * scheduling works the same way for both, just with more photos attached.
  */
-export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl, imageUrls }) {
+export async function schedulePost({ pageId, pageAccessToken, message, publishTimeUnix, imageUrl, imageUrls, imageBlob }) {
   const urls = imageUrls && imageUrls.length > 0 ? imageUrls : imageUrl ? [imageUrl] : [];
 
   if (urls.length > 1) {
@@ -210,9 +215,13 @@ export async function schedulePost({ pageId, pageAccessToken, message, publishTi
     return { id: data.id };
   }
 
-  if (urls[0]) {
+  if (urls[0] || imageBlob) {
     const form = new FormData();
-    form.append('url', urls[0]);
+    if (imageBlob) {
+      form.append('source', imageBlob, 'post-image.jpg');
+    } else {
+      form.append('url', urls[0]);
+    }
     form.append('caption', message || '');
     form.append('published', 'false');
     form.append('scheduled_publish_time', String(publishTimeUnix));
