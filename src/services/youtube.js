@@ -30,7 +30,11 @@ const SCOPES = [
 ].join(' ');
 
 export function oauthRedirectUri() {
-  return `${window.location.origin}/oauth-callback.html`;
+  // BASE_URL reflects Vite's `base` config (e.g. "/social-manager/") so this
+  // resolves correctly whether the app is hosted at the domain root or in a
+  // subfolder — matching wherever oauth-callback.html actually deployed to.
+  const base = import.meta.env.BASE_URL || '/';
+  return `${window.location.origin}${base}oauth-callback.html`;
 }
 
 /**
