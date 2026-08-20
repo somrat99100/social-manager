@@ -371,6 +371,58 @@ p { margin: 0; }
   .app-content { padding: 20px 16px 50px; }
 }
 
+/* ================= Mobile layout pass ================= */
+/* Every card-based list row (channel, post, sheet-row, stat) switches from
+   a single tight horizontal line to a wrapped layout with full-width text
+   and action rows, so nothing gets squeezed or clipped on a phone screen. */
+@media (max-width: 640px) {
+  .home-hero { flex-direction: column; align-items: stretch; padding: 20px; text-align: left; }
+  .home-hero-cta { width: 100%; }
+  .home-hero-text h1 { font-size: 20px; }
+
+  .page-head { flex-direction: column; align-items: stretch; }
+  .page-head h1 { font-size: 22px; }
+  .page-head > .btn { width: 100%; }
+
+  .stat-row { flex-direction: column; gap: 10px; }
+
+  .tab-strip { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .tab-strip::-webkit-scrollbar { display: none; }
+  .tab-btn { white-space: nowrap; }
+
+  .channel-card { flex-wrap: wrap; padding: 14px; }
+  .channel-card-info { flex-basis: 100%; }
+  .channel-card-actions { flex-basis: 100%; }
+  .channel-card-actions .btn { flex: 1; }
+
+  .post-row { flex-wrap: wrap; row-gap: 8px; }
+  .post-row-text { flex-basis: 100%; order: 3; }
+  .post-row > .badge { order: 2; }
+  .post-row-row-actions { flex-basis: 100%; order: 4; justify-content: flex-end; }
+  .post-row-row-actions .btn { flex: 1; }
+
+  .sheet-row { flex-wrap: wrap; row-gap: 8px; }
+  .sheet-row-body { flex-basis: 100%; order: 3; }
+  .sheet-row > .badge { order: 2; }
+  .sheet-row-actions { order: 4; flex-basis: 100%; justify-content: flex-end; }
+
+  .schedule-settings-grid { grid-template-columns: 1fr; }
+  .queue-tab-strip { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; flex-wrap: nowrap; }
+
+  .run-summary { flex-direction: column; align-items: stretch; }
+  .run-summary .btn { width: 100%; }
+
+  .modal { padding: 18px; }
+
+  .section-head { flex-direction: column; align-items: flex-start; gap: 4px; }
+}
+
+@media (max-width: 420px) {
+  .app-content { padding: 16px 12px 44px; }
+  .platform-tab { padding: 8px 12px; font-size: 12.5px; }
+  .auth-card { padding: 24px 20px; }
+}
+
 /* ================= Page primitives ================= */
 .page-head {
   display: flex;
@@ -405,8 +457,10 @@ p { margin: 0; }
   font-size: 13.5px;
   font-weight: 600;
   color: var(--ink-soft);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
-.platform-tab-active { border-color: var(--ink); color: var(--ink); background: white; box-shadow: 0 1px 0 var(--ink); }
+.platform-tab:hover { border-color: var(--ink-faint); transform: translateY(-1px); }
+.platform-tab-active { border-color: var(--ink); color: var(--ink); background: white; box-shadow: 0 2px 8px rgba(18, 20, 28, 0.1); }
 .platform-tab-icon { font-family: var(--font-display); font-weight: 700; }
 
 /* Channel card */
@@ -430,21 +484,67 @@ p { margin: 0; }
   box-shadow: 0 4px 14px rgba(18, 20, 28, 0.06);
 }
 
+/* Home hero */
+.home-hero {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  padding: 26px 28px; margin-bottom: 20px; position: relative; overflow: hidden;
+  background:
+    radial-gradient(120% 160% at 100% 0%, rgba(47, 111, 237, 0.10), transparent 55%),
+    linear-gradient(180deg, var(--surface), var(--paper) 220%);
+  box-shadow: 0 6px 24px rgba(18, 20, 28, 0.06);
+}
+.home-hero::before {
+  content: ''; position: absolute; inset: 0 0 auto 0; height: 3px;
+  background: linear-gradient(90deg, var(--accent), #8a6ef2, var(--live));
+}
+.home-hero-eyebrow {
+  font-family: var(--font-mono); font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--ink-faint); margin-bottom: 8px;
+}
+.home-hero-text h1 { font-size: 24px; }
+.home-hero-cta { flex-shrink: 0; }
+
 /* Stats */
 .stat-row { display: flex; gap: 14px; margin-bottom: 8px; }
-.stat-card { flex: 1; padding: 18px 20px; }
+.stat-card {
+  flex: 1; padding: 18px 20px; position: relative;
+  transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+.stat-card:hover { box-shadow: 0 4px 14px rgba(18, 20, 28, 0.08); transform: translateY(-1px); }
+.stat-card-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; border-radius: 8px; margin-bottom: 10px;
+  font-size: 13px; font-weight: 700;
+}
+.stat-card-icon-live { background: var(--live-soft); color: var(--live); }
+.stat-card-icon-ok { background: var(--ok-soft); color: var(--ok); }
+.stat-card-icon-warn { background: var(--warn-soft); color: var(--warn); }
 .stat-num { font-family: var(--font-display); font-size: 30px; font-weight: 600; margin-bottom: 2px; }
 
 /* Post rows */
 .post-list { display: flex; flex-direction: column; gap: 8px; }
-.post-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.post-row {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.post-row:hover { border-color: var(--ink-faint); box-shadow: 0 3px 10px rgba(18, 20, 28, 0.06); transform: translateY(-1px); }
 .post-row-lg { padding: 14px 16px; }
 .post-row-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; }
 .post-row-text { flex: 1; min-width: 0; font-size: 13.5px; }
+/* Caption text box — multi-line clamp so a long caption reads cleanly in
+   its own box instead of being squeezed into one ellipsis-truncated line
+   by the surrounding flex row, especially on narrow screens. */
 .post-row-text > div:not(.post-row-page) {
-  white-space: nowrap;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  padding: 7px 10px;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
 }
 .post-row-page {
   display: flex;
@@ -727,6 +827,44 @@ p { margin: 0; }
   font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); flex-shrink: 0;
 }
 .sheet-row-thumb-empty { background: var(--paper); border: 1px dashed var(--line); }
+.sheet-row-drag { opacity: 0.4; margin-right: 2px; cursor: grab; font-size: 13px; }
+.sheet-row-failed { border-color: rgba(255, 90, 54, 0.3); background: linear-gradient(180deg, var(--live-soft) 0%, var(--surface) 70%); }
+
+/* Caption "text box" treatment — replaces the old single-line ellipsis
+   truncation (which looked broken on narrow screens) with a proper
+   multi-line clamped box, so the text always reads cleanly instead of
+   getting squeezed off-screen by its siblings. */
+.sheet-row-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.sheet-row-caption {
+  font-size: 13.5px;
+  line-height: 1.5;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-s);
+  padding: 8px 11px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.sheet-row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Run summary strip — shown once a queue run has produced any results,
+   giving a running tally plus a one-click way to retry everything that
+   failed instead of hunting for each failed row individually. */
+.run-summary {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  margin-top: 14px; padding: 12px 14px;
+  background: var(--paper); border: 1px solid var(--line); border-radius: var(--radius-m);
+}
+.run-summary-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+.run-summary-chip {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600;
+  padding: 5px 11px; border-radius: 100px; background: var(--surface); border: 1px solid var(--line);
+  color: var(--ink-soft);
+}
+.run-summary-chip-ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.run-summary-chip-warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
 
 /* Step numbering used on the Sheet / Schedule / Rows section headers, so
    the page reads as a clear top-to-bottom sequence rather than a stack of

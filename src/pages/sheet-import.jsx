@@ -267,6 +267,20 @@ export default function SheetImport() {
     return s;
   }, [posts]);
 
+  // Live status lookup, keyed by sheetRowKey. Fixes a real bug: `runLog`
+  // only ever gets written at the moment a row is approved ('scheduled' or
+  // 'posted' right then), and is never touched again — so once the global
+  // background sync (use-post-status-sync.js) later flips a post's real
+  // Firestore status from 'scheduled' to 'posted', this page kept showing
+  // the stale "Scheduled" label forever. Cross-referencing the live `posts`
+  // list (which the same background sync updates) means a row's status here
+  // always reflects what actually happened on Facebook.
+  const postByRowKey = useMemo(() => {
+    const m = new Map();
+    posts.forEach((p) => { if (p.sheetRowKey) m.set(p.sheetRowKey, p); });
+    return m;
+  }, [posts]);
+
   const includedRows = rows.filter(
     (r) => r.included && sheetId && !dupSet.has(rowKey(sheetId, r.rowNumber, cycle))
   );
@@ -280,6 +294,22 @@ export default function SheetImport() {
     rows.length > 0 &&
     sheetId &&
     rows.every((r) => dupSet.has(rowKey(sheetId, r.rowNumber, cycle)));
+
+  // Display order for the row list: everything keeps its normal (schedule)
+  // order EXCEPT rows that failed to send, which sink to the bottom so
+  // they're easy to spot and retry instead of being buried among rows that
+  // are still waiting their turn. Indices (not a resorted copy) are used so
+  // drag-to-reorder keeps splicing the real `rows` array correctly.
+  const displayIndices = useMemo(() => {
+    return rows
+      .map((_, idx) => idx)
+      .sort((a, b) => {
+        const failedA = runLog[rows[a].rowNumber]?.state === 'failed' ? 1 : 0;
+        const failedB = runLog[rows[b].rowNumber]?.state === 'failed' ? 1 : 0;
+        if (failedA !== failedB) return failedA - failedB;
+        return a - b;
+      });
+  }, [rows, runLog]);
 
   const doFetch = async () => {
     setFetchError('');
@@ -378,6 +408,91 @@ export default function SheetImport() {
     setRows((prev) => prev.map((r) => (r.rowNumber === rowNumber ? { ...r, caption } : r)));
   };
 
+  // Shared single-row publish/schedule logic, used both by the bulk
+  // approve run and by individual/bulk "Retry" so the two paths can never
+  // drift apart. Returns nothing — all outcomes are written into runLog.
+  const publishOneRow = async ({ row, key, publishAt }) => {
+    setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posting' } }));
+
+    if (row.driveFolder && row.imageError) {
+      setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: row.imageError } }));
+      return;
+    }
+
+    // A single plain-internet image link (not Drive) is fetched into the
+    // browser and uploaded as raw bytes rather than handed to Facebook as a
+    // `url` — see fetchImageBlob's docstring for why. Drive links and
+    // multi-image (folder) rows keep using the existing URL-based path.
+    const isDirectSingleImage = row.imageSourceType === 'direct' && row.images?.length === 1;
+    let imageBlob;
+    if (isDirectSingleImage) {
+      try {
+        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posting', message: 'Downloading image…' } }));
+        imageBlob = await fetchImageBlob(row.images[0]);
+      } catch (e) {
+        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: e.message } }));
+        return;
+      }
+    }
+
+    try {
+      if (!publishAt) {
+        const res = await publishToPage({
+          pageId: fb.pageId,
+          pageAccessToken: fb.pageAccessToken,
+          message: row.caption,
+          imageBlob,
+          imageUrls: !imageBlob && row.images && row.images.length > 0 ? row.images : undefined,
+        });
+        await savePost(user.uid, {
+          caption: row.caption,
+          imageUrl: row.imageUrl || null,
+          imageUrls: row.images || [],
+          status: 'posted',
+          fbPostId: res.id,
+          fbPageId: fb.pageId,
+          source: 'sheet',
+          sheetRowKey: key,
+        });
+        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posted' } }));
+      } else {
+        const nowSec = Math.floor(Date.now() / 1000);
+        if (publishAt - nowSec > MAX_SCHEDULE_SECONDS) {
+          setRunLog((prev) => ({
+            ...prev,
+            [row.rowNumber]: {
+              state: 'failed',
+              message: "Beyond Facebook's 75-day scheduling limit — run this again once earlier posts go out.",
+            },
+          }));
+          return;
+        }
+        const res = await schedulePost({
+          pageId: fb.pageId,
+          pageAccessToken: fb.pageAccessToken,
+          message: row.caption,
+          publishTimeUnix: publishAt,
+          imageBlob,
+          imageUrls: !imageBlob && row.images && row.images.length > 0 ? row.images : undefined,
+        });
+        await savePost(user.uid, {
+          caption: row.caption,
+          imageUrl: row.imageUrl || null,
+          imageUrls: row.images || [],
+          status: 'scheduled',
+          fbPostId: res.id,
+          fbPageId: fb.pageId,
+          source: 'sheet',
+          sheetRowKey: key,
+          scheduledAt: publishAt * 1000,
+        });
+        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'scheduled', scheduledFor: publishAt * 1000 } }));
+      }
+    } catch (e) {
+      setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: e.message } }));
+    }
+  };
+
   // targetRows/targetCycle let "Repeat from the top" run this same logic
   // against the new cycle without waiting on a stale state read.
   const runApprove = async (targetRows, targetCycle) => {
@@ -391,91 +506,40 @@ export default function SheetImport() {
     for (let i = 0; i < targetRows.length; i++) {
       const row = targetRows[i];
       const key = rowKey(sheetId, row.rowNumber, targetCycle);
-      setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posting' } }));
-
-      if (row.driveFolder && row.imageError) {
-        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: row.imageError } }));
-        continue;
-      }
-
       const isImmediate = postFirstNow && i === 0;
-      // A single plain-internet image link (not Drive) is fetched into the
-      // browser and uploaded as raw bytes rather than handed to Facebook as
-      // a `url` — see fetchImageBlob's docstring for why. Drive links and
-      // multi-image (folder) rows keep using the existing URL-based path.
-      const isDirectSingleImage = row.imageSourceType === 'direct' && row.images?.length === 1;
-      let imageBlob;
-      if (isDirectSingleImage) {
-        try {
-          setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posting', message: 'Downloading image…' } }));
-          imageBlob = await fetchImageBlob(row.images[0]);
-        } catch (e) {
-          setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: e.message } }));
-          continue;
-        }
+      let publishAt = null;
+      if (!isImmediate) {
+        scheduleSteps += 1;
+        publishAt = nowSec + scheduleSteps * intervalSec;
       }
-      try {
-        if (isImmediate) {
-          const res = await publishToPage({
-            pageId: fb.pageId,
-            pageAccessToken: fb.pageAccessToken,
-            message: row.caption,
-            imageBlob,
-            imageUrls: !imageBlob && row.images && row.images.length > 0 ? row.images : undefined,
-          });
-          await savePost(user.uid, {
-            caption: row.caption,
-            imageUrl: row.imageUrl || null,
-            imageUrls: row.images || [],
-            status: 'posted',
-            fbPostId: res.id,
-            fbPageId: fb.pageId,
-            source: 'sheet',
-            sheetRowKey: key,
-          });
-          setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'posted' } }));
-        } else {
-          scheduleSteps += 1;
-          const publishAt = nowSec + scheduleSteps * intervalSec;
-          if (publishAt - nowSec > MAX_SCHEDULE_SECONDS) {
-            setRunLog((prev) => ({
-              ...prev,
-              [row.rowNumber]: {
-                state: 'failed',
-                message: "Beyond Facebook's 75-day scheduling limit — run this again once earlier posts go out.",
-              },
-            }));
-            continue;
-          }
-          const res = await schedulePost({
-            pageId: fb.pageId,
-            pageAccessToken: fb.pageAccessToken,
-            message: row.caption,
-            publishTimeUnix: publishAt,
-            imageBlob,
-            imageUrls: !imageBlob && row.images && row.images.length > 0 ? row.images : undefined,
-          });
-          await savePost(user.uid, {
-            caption: row.caption,
-            imageUrl: row.imageUrl || null,
-            imageUrls: row.images || [],
-            status: 'scheduled',
-            fbPostId: res.id,
-            fbPageId: fb.pageId,
-            source: 'sheet',
-            sheetRowKey: key,
-            scheduledAt: publishAt * 1000,
-          });
-          setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'scheduled', scheduledFor: publishAt * 1000 } }));
-        }
-      } catch (e) {
-        setRunLog((prev) => ({ ...prev, [row.rowNumber]: { state: 'failed', message: e.message } }));
-      }
+      await publishOneRow({ row, key, publishAt });
     }
     setApproving(false);
   };
 
   const handleApprove = () => runApprove(includedRows, cycle);
+
+  // Retry — for rows that failed (image fetch error, transient API hiccup,
+  // an expired-token attempt, etc). Since a failed row's original schedule
+  // slot has already come and gone, retrying always posts it right away
+  // rather than re-computing a new scheduled time.
+  const retryRow = async (row) => {
+    if (!fb || approving) return;
+    const key = rowKey(sheetId, row.rowNumber, cycle);
+    await publishOneRow({ row, key, publishAt: null });
+  };
+
+  const retryAllFailed = async () => {
+    if (!fb || approving) return;
+    const failed = rows.filter((r) => runLog[r.rowNumber]?.state === 'failed');
+    if (failed.length === 0) return;
+    setApproving(true);
+    for (const row of failed) {
+      const key = rowKey(sheetId, row.rowNumber, cycle);
+      await publishOneRow({ row, key, publishAt: null });
+    }
+    setApproving(false);
+  };
 
   const handleRepeat = () => {
     const nextCycle = cycle + 1;
@@ -692,12 +756,15 @@ export default function SheetImport() {
             </p>
 
             <div className="post-list" style={{ marginTop: 12 }}>
-              {rows.map((row, i) => {
+              {displayIndices.map((i) => {
+                const row = rows[i];
                 const key = sheetId ? rowKey(sheetId, row.rowNumber, cycle) : null;
                 const isDup = key && dupSet.has(key);
+                const livePost = key ? postByRowKey.get(key) : null;
                 const log = runLog[row.rowNumber];
                 const isImmediateSlot = postFirstNow && includedRows[0]?.rowNumber === row.rowNumber;
                 const isBusy = log?.state === 'posting' || approving;
+                const isFailed = log?.state === 'failed';
 
                 let statusLabel = 'Ready';
                 let statusClass = 'ok';
@@ -711,19 +778,27 @@ export default function SheetImport() {
                   statusLabel = row.included && isImmediateSlot ? `Ready · posts immediately${imgSuffix}` : `Ready${imgSuffix}`;
                 }
 
-                if (log?.state === 'posting') { statusLabel = 'Posting…'; statusClass = 'warn'; }
+                // Prefer the live Firestore post's status (kept fresh by the
+                // background sync) over the one-shot local runLog value, so
+                // a row that's actually gone live on Facebook always shows
+                // "Posted" here — never stuck on "Scheduled".
+                if (livePost?.status === 'posted') { statusLabel = 'Posted ✓'; statusClass = 'live'; }
+                else if (livePost?.status === 'scheduled') {
+                  statusLabel = `Scheduled · ${new Date(livePost.scheduledAt || log?.scheduledFor).toLocaleString()}`;
+                  statusClass = 'ok';
+                } else if (log?.state === 'posting') { statusLabel = 'Posting…'; statusClass = 'warn'; }
                 else if (log?.state === 'posted') { statusLabel = 'Posted ✓'; statusClass = 'live'; }
                 else if (log?.state === 'scheduled') {
                   statusLabel = `Scheduled · ${new Date(log.scheduledFor).toLocaleString()}`;
                   statusClass = 'ok';
-                } else if (log?.state === 'failed') { statusLabel = 'Failed'; statusClass = 'warn'; }
+                } else if (isFailed) { statusLabel = 'Failed'; statusClass = 'warn'; }
 
                 const canDrag = !isBusy && !log; // once it's touched by a run, its position is locked
 
                 return (
                   <div
                     key={row.rowNumber}
-                    className="card sheet-row"
+                    className={`card sheet-row ${isFailed ? 'sheet-row-failed' : ''}`}
                     onClick={() => setPreviewRow(row)}
                     draggable={canDrag}
                     onDragStart={(e) => { e.stopPropagation(); setDragRowIndex(i); }}
@@ -747,7 +822,7 @@ export default function SheetImport() {
                     }}
                   >
                     {canDrag && (
-                      <span style={{ opacity: 0.5, marginRight: 2 }} onClick={(e) => e.stopPropagation()}>⋮⋮</span>
+                      <span className="sheet-row-drag" onClick={(e) => e.stopPropagation()}>⋮⋮</span>
                     )}
                     <span className="sheet-row-num">{i + 1}</span>
                     <input
@@ -765,29 +840,60 @@ export default function SheetImport() {
                     ) : (
                       <div className="post-row-thumb sheet-row-thumb-empty" />
                     )}
-                    <div className="post-row-text">{row.caption || <span className="field-hint">(no caption)</span>}</div>
-                    {row.imageError && !log?.message && (
-                      <div className="field-hint" style={{ color: 'var(--warn)' }}>{row.imageError}</div>
-                    )}
-                    {log?.message && <div className="field-hint" style={{ color: 'var(--warn)' }}>{log.message}</div>}
+                    <div className="sheet-row-body">
+                      <div className="sheet-row-caption">{row.caption || <span className="field-hint">(no caption)</span>}</div>
+                      {row.imageError && !log?.message && (
+                        <div className="field-hint" style={{ color: 'var(--warn)' }}>{row.imageError}</div>
+                      )}
+                      {log?.message && <div className="field-hint" style={{ color: 'var(--warn)' }}>{log.message}</div>}
+                    </div>
                     <span className={`badge badge-${statusClass}`}>{statusLabel}</span>
-                    {canDrag && (
-                      <button
-                        className="btn btn-ghost btn-sm"
-                        onClick={(e) => { e.stopPropagation(); deleteRow(row.rowNumber); }}
-                        aria-label={`Delete row ${row.rowNumber}`}
-                        title="Delete — this row will never be posted"
-                      >
-                        ✕
-                      </button>
-                    )}
+                    <div className="sheet-row-actions" onClick={(e) => e.stopPropagation()}>
+                      {isFailed && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          disabled={approving}
+                          onClick={() => retryRow(row)}
+                          title="Post this one right away"
+                        >
+                          ↻ Retry
+                        </button>
+                      )}
+                      {canDrag && (
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => deleteRow(row.rowNumber)}
+                          aria-label={`Delete row ${row.rowNumber}`}
+                          title="Delete — this row will never be posted"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}
             </div>
 
+            {results.length > 0 && (
+              <div className="run-summary">
+                <div className="run-summary-stats">
+                  <span className="run-summary-chip run-summary-chip-ok">✓ {doneCount} sent</span>
+                  {failedCount > 0 && (
+                    <span className="run-summary-chip run-summary-chip-warn">⚠ {failedCount} failed</span>
+                  )}
+                  {approving && <span className="run-summary-chip">Working…</span>}
+                </div>
+                {failedCount > 0 && (
+                  <button className="btn btn-ghost btn-sm" disabled={approving} onClick={retryAllFailed}>
+                    ↻ Retry all failed
+                  </button>
+                )}
+              </div>
+            )}
+
             {runComplete && (
-              <p className="field-hint" style={{ marginTop: 14 }}>
+              <p className="field-hint" style={{ marginTop: 10 }}>
                 Done — {doneCount} sent to Facebook{failedCount > 0 ? `, ${failedCount} failed` : ''}. Check the{' '}
                 <Link to="/log">broadcast log</Link> for full status.
               </p>

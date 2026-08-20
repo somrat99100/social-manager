@@ -201,7 +201,7 @@ export default function Log() {
                 <span className={`badge badge-${p.status === 'posted' ? 'live' : p.status === 'scheduled' ? 'ok' : 'warn'}`}>
                   {p.status}
                 </span>
-                <div style={{ display: 'flex', gap: 6 }}>
+                <div className="post-row-row-actions" style={{ display: 'flex', gap: 6 }}>
                   {p.status === 'draft' && (
                     <button
                       className="btn btn-ghost btn-sm"

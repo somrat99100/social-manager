@@ -10,6 +10,12 @@ const PLATFORMS = [
   { key: 'youtube', label: 'YouTube', icon: '▶', live: true },
 ];
 
+const GREETINGS = ['Good morning', 'Good afternoon', 'Good evening'];
+function timeGreeting() {
+  const h = new Date().getHours();
+  return GREETINGS[h < 12 ? 0 : h < 18 ? 1 : 2];
+}
+
 export default function Home() {
   const { user, profile } = useAuth();
   const [tab, setTab] = useState('facebook');
@@ -28,15 +34,22 @@ export default function Home() {
   const recent = postsForTab.slice(0, 4);
   const draftCount = postsForTab.filter((p) => p.status === 'draft').length;
   const postedCount = postsForTab.filter((p) => p.status === 'posted').length;
+  const scheduledCount = postsForTab.filter((p) => p.status === 'scheduled').length;
+  const connectedChannels = (pages.length > 0 ? 1 : 0) + (youtube?.refreshToken ? 1 : 0);
 
   return (
     <div className="page">
-      <div className="page-head">
-        <div>
-          <h1>Home</h1>
-          <p className="field-hint">Every channel, one control room.</p>
+      <div className="home-hero card">
+        <div className="home-hero-text">
+          <p className="home-hero-eyebrow">{timeGreeting()}{profile?.name ? `, ${profile.name}` : ''}</p>
+          <h1>Every channel, one control room.</h1>
+          <p className="field-hint" style={{ marginTop: 6 }}>
+            {connectedChannels > 0
+              ? `${connectedChannels} channel${connectedChannels > 1 ? 's' : ''} connected · ${postedCount} posted so far`
+              : 'Connect a channel to start publishing from here.'}
+          </p>
         </div>
-        <Link to="/create" className="btn btn-accent">+ New post</Link>
+        <Link to="/create" className="btn btn-accent home-hero-cta">+ New post</Link>
       </div>
 
       <div className="platform-tabs">
@@ -96,10 +109,17 @@ export default function Home() {
 
           <div className="stat-row">
             <div className="card stat-card">
+              <span className="stat-card-icon stat-card-icon-live">✓</span>
               <div className="stat-num">{postedCount}</div>
               <div className="field-hint">Posted</div>
             </div>
             <div className="card stat-card">
+              <span className="stat-card-icon stat-card-icon-ok">◷</span>
+              <div className="stat-num">{scheduledCount}</div>
+              <div className="field-hint">Scheduled</div>
+            </div>
+            <div className="card stat-card">
+              <span className="stat-card-icon stat-card-icon-warn">✎</span>
               <div className="stat-num">{draftCount}</div>
               <div className="field-hint">Drafts waiting</div>
             </div>
@@ -161,10 +181,17 @@ export default function Home() {
           )}
           <div className="stat-row">
             <div className="card stat-card">
+              <span className="stat-card-icon stat-card-icon-live">✓</span>
               <div className="stat-num">{postedCount}</div>
               <div className="field-hint">Posted</div>
             </div>
             <div className="card stat-card">
+              <span className="stat-card-icon stat-card-icon-ok">◷</span>
+              <div className="stat-num">{scheduledCount}</div>
+              <div className="field-hint">Scheduled</div>
+            </div>
+            <div className="card stat-card">
+              <span className="stat-card-icon stat-card-icon-warn">✎</span>
               <div className="stat-num">{draftCount}</div>
               <div className="field-hint">Drafts waiting</div>
             </div>
