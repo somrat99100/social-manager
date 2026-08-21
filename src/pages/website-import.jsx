@@ -290,7 +290,7 @@ export default function WebsiteImport() {
   // re-fetching the pages — handy after tweaking the code (e.g. CAMPUS ->
   // CAMPUS10) once titles/prices are already pulled in.
   const reapplyPromoCode = () => {
-    setRows((prev) => prev.map((r) => ({ ...r, caption: buildWebsiteCaption({ title: r.title, price: r.price, promoCode: promoCode.trim() }) })));
+    setRows((prev) => prev.map((r) => ({ ...r, caption: buildWebsiteCaption({ title: r.title, price: r.price, promoCode: promoCode.trim(), url: r.url }) })));
     persistActiveSource({ promoCode: promoCode.trim() });
   };
 
@@ -542,7 +542,8 @@ export default function WebsiteImport() {
               placeholder="e.g. CAMPUS"
             />
             <p className="field-hint" style={{ marginTop: 4 }}>
-              Added to every post as a bold line: <strong>Promo Code: {promoCode.trim() || 'CAMPUS'}</strong>
+              Added to every post as a bold line: <strong>Promo Code: {promoCode.trim() || 'CAMPUS'}</strong>, followed
+              by that book's page link.
             </p>
           </div>
 

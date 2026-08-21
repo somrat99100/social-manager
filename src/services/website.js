@@ -245,13 +245,14 @@ function extractBookCards(doc, baseUrl) {
   return cards;
 }
 
-/** Builds the Facebook caption from a scraped title/price plus a bold promo line, e.g. "Promo Code: CAMPUS". */
-export function buildWebsiteCaption({ title, price, promoCode }) {
+/** Builds the Facebook caption from a scraped title/price plus a bold promo line, e.g. "Promo Code: CAMPUS", followed by the book's own page link. */
+export function buildWebsiteCaption({ title, price, promoCode, url }) {
   const lines = [];
   if (title) lines.push(title);
   if (price) lines.push(`Price: ${price}`);
   const code = (promoCode || '').trim();
   if (code) lines.push(toUnicodeBold(`Promo Code: ${code}`));
+  if (url) lines.push(url);
   return lines.join('\n\n');
 }
 
@@ -261,7 +262,7 @@ function okRow(rowNumber, url, { title, price, image }, promoCode) {
     url,
     title,
     price,
-    caption: buildWebsiteCaption({ title, price, promoCode }),
+    caption: buildWebsiteCaption({ title, price, promoCode, url }),
     imageUrl: image,
     images: image ? [image] : [],
     imageCount: image ? 1 : 0,
@@ -298,7 +299,10 @@ function errorRow(rowNumber, url, message) {
  *  2. A LISTING/CATEGORY page (many items) — every book card on the page
  *     becomes its own row, exactly like the screenshot: a "[বিজ্ঞান বেসিক
  *     সিরিজ]" category page turns into one row per book shown on it, not
- *     one row for the category heading.
+ *     one row for the category heading. Since listing pages often serve an
+ *     already-shortened title (a real "…" baked into the HTML, not a CSS
+ *     truncation), each card's own book page is fetched as a follow-up so
+ *     the row gets the full, untruncated title/price/image instead.
  *  3. A generic fallback (JSON-LD/Open Graph) for other sites that don't
  *     use this site's specific markup.
  *
@@ -324,10 +328,29 @@ export async function fetchWebsiteRows({ urls, promoCode }) {
 
       const cards = extractBookCards(doc, url);
       if (cards.length > 0) {
-        cards.forEach((card) => {
+        // The listing page itself serves each title already cut short with
+        // "…" baked right into the HTML — there's no full title to find on
+        // this page. Each card does link to that book's own detail page
+        // though, so fetch it and use extractSingleBookPage's untruncated
+        // title/price/image instead, falling back to the card's own
+        // (possibly short) data only if that follow-up fetch fails.
+        for (const card of cards) {
           rowNumber += 1;
-          rows.push(okRow(rowNumber, card.url, card, promoCode));
-        });
+          let full = card;
+          if (card.url && card.url !== url) {
+            try {
+              const detailHtml = await fetchPageHtml(card.url);
+              const detailDoc = new DOMParser().parseFromString(detailHtml, 'text/html');
+              const detail = extractSingleBookPage(detailDoc, card.url);
+              if (detail?.title) full = { ...card, ...detail };
+            } catch {
+              // Detail page couldn't be read — keep the listing card's
+              // (possibly truncated) title/price/image rather than failing
+              // the whole row.
+            }
+          }
+          rows.push(okRow(rowNumber, full.url || card.url, full, promoCode));
+        }
         continue;
       }
 
