@@ -139,9 +139,8 @@ function extractPrice(doc, jsonLdProduct, bodyText) {
   return '';
 }
 
-/** Parses one page's HTML into { title, image, price }. */
-function extractProductInfo(html, baseUrl) {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
+/** Generic fallback: JSON-LD Product / Open Graph tags / a plain <h1>. Used only when a page doesn't match either of the site-specific patterns below, so it still works reasonably on other stores. */
+function extractGenericProductInfo(doc, baseUrl) {
   const jsonLdProduct = findJsonLdProduct(doc);
 
   const title =
@@ -167,6 +166,85 @@ function extractProductInfo(html, baseUrl) {
   return { title: title.replace(/\s+/g, ' ').trim(), image, price };
 }
 
+function cleanText(el) {
+  return el ? el.textContent.replace(/\s+/g, ' ').trim() : '';
+}
+
+function cardImageSrc(imgEl, baseUrl) {
+  if (!imgEl) return '';
+  // Carousel/lazy-loaded images (e.g. Splide) often hold the real URL in a
+  // data-* attribute and leave src empty/blank until scrolled into view.
+  const raw = imgEl.getAttribute('data-splide-lazy') || imgEl.getAttribute('data-src') || imgEl.getAttribute('src') || '';
+  return absolutize(raw, baseUrl);
+}
+
+/**
+ * Matches a single product/book DETAIL page — one item described in depth,
+ * e.g. https://aspectseriesbd.com/book/vr-basic-sr-s-combo-1 — using this
+ * site's specific markup: `.single-book-title` for the name, the cover
+ * photo image, and `.price-box` for the current price. Returns null if the
+ * page doesn't look like this kind of page at all, so the caller can try a
+ * listing page instead.
+ */
+function extractSingleBookPage(doc, baseUrl) {
+  const titleEl = doc.querySelector('.single-book-title');
+  if (!titleEl) return null;
+  return {
+    title: cleanText(titleEl),
+    image: cardImageSrc(doc.querySelector('.book-cover-photo img'), baseUrl),
+    price: cleanText(doc.querySelector('.price-box')),
+  };
+}
+
+/**
+ * Matches a LISTING/CATEGORY page — many book cards on one page, e.g.
+ * https://aspectseriesbd.com/books/ — and returns one entry per card
+ * instead of one entry for the whole page. This site (and its own "Similar
+ * Books" carousel, which reuses the same card markup) repeats `.book-title`
+ * / `.book-price` inside a card, wrapped in a link to that book's own page.
+ * The search starts from each `.book-title` and walks a few ancestors up to
+ * find the smallest wrapper that also has a price and an image, which keeps
+ * this resilient to the exact nesting differing slightly page to page.
+ */
+function extractBookCards(doc, baseUrl) {
+  const cards = [];
+  const seen = new Set();
+  doc.querySelectorAll('.book-title').forEach((titleEl) => {
+    const title = cleanText(titleEl);
+    if (!title) return;
+
+    let container = titleEl.parentElement;
+    let priceEl = null;
+    let imgEl = null;
+    let linkEl = null;
+    for (let hops = 0; hops < 6 && container; hops++) {
+      priceEl = priceEl || container.querySelector('.book-price, [class*="price"]');
+      imgEl = imgEl || container.querySelector('img');
+      linkEl = linkEl || (container.tagName === 'A' ? container : container.querySelector('a[href]'));
+      if (priceEl && imgEl && linkEl) break;
+      container = container.parentElement;
+    }
+    // Require at least a price or image alongside the title — otherwise
+    // this ".book-title" match is probably unrelated page chrome, not a
+    // real book card.
+    if (!priceEl && !imgEl) return;
+
+    const href = linkEl?.getAttribute?.('href') || '';
+    const url = href ? absolutize(href, baseUrl) : baseUrl;
+    const dedupeKey = url + '|' + title;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+
+    cards.push({
+      title,
+      price: cleanText(priceEl),
+      image: cardImageSrc(imgEl, baseUrl),
+      url,
+    });
+  });
+  return cards;
+}
+
 /** Builds the Facebook caption from a scraped title/price plus a bold promo line, e.g. "Promo Code: CAMPUS". */
 export function buildWebsiteCaption({ title, price, promoCode }) {
   const lines = [];
@@ -177,62 +255,92 @@ export function buildWebsiteCaption({ title, price, promoCode }) {
   return lines.join('\n\n');
 }
 
+function okRow(rowNumber, url, { title, price, image }, promoCode) {
+  return {
+    rowNumber,
+    url,
+    title,
+    price,
+    caption: buildWebsiteCaption({ title, price, promoCode }),
+    imageUrl: image,
+    images: image ? [image] : [],
+    imageCount: image ? 1 : 0,
+    imageSourceType: image ? 'direct' : null,
+    imageError: null,
+  };
+}
+
+function errorRow(rowNumber, url, message) {
+  return {
+    rowNumber,
+    url,
+    title: '',
+    price: '',
+    caption: '',
+    imageUrl: '',
+    images: [],
+    imageCount: 0,
+    imageSourceType: null,
+    imageError: message,
+  };
+}
+
 /**
  * Fetches and parses a list of website URLs into rows shaped like sheet
  * rows — { rowNumber, url, title, price, caption, imageUrl, images,
  * imageCount, imageSourceType } — so the rest of the posting/scheduling UI
- * (built for sheet rows) can treat them identically. A single URL failing
- * doesn't abort the batch — it comes back as a row with `imageError` set so
- * it's visible in the queue instead of silently vanishing.
+ * (built for sheet rows) can treat them identically.
+ *
+ * Each URL is checked against three patterns, in order:
+ *  1. A single product/book DETAIL page (one item) — e.g. a specific book's
+ *     own page. Checked first so a detail page's own "Similar Books" style
+ *     carousel of other items doesn't get mistaken for the main product.
+ *  2. A LISTING/CATEGORY page (many items) — every book card on the page
+ *     becomes its own row, exactly like the screenshot: a "[বিজ্ঞান বেসিক
+ *     সিরিজ]" category page turns into one row per book shown on it, not
+ *     one row for the category heading.
+ *  3. A generic fallback (JSON-LD/Open Graph) for other sites that don't
+ *     use this site's specific markup.
+ *
+ * A single URL failing doesn't abort the batch — it comes back as one error
+ * row with `imageError` set so it's visible in the queue instead of
+ * silently vanishing.
  */
 export async function fetchWebsiteRows({ urls, promoCode }) {
   const rows = [];
-  for (let i = 0; i < urls.length; i++) {
-    const url = urls[i];
-    const rowNumber = i + 1;
+  let rowNumber = 0;
+
+  for (const url of urls) {
     try {
       const html = await fetchPageHtml(url);
-      const { title, image, price } = extractProductInfo(html, url);
-      if (!title && !image && !price) {
-        rows.push({
-          rowNumber,
-          url,
-          title: '',
-          price: '',
-          caption: '',
-          imageUrl: '',
-          images: [],
-          imageCount: 0,
-          imageSourceType: null,
-          imageError: "Couldn't find a title, image, or price on that page.",
+      const doc = new DOMParser().parseFromString(html, 'text/html');
+
+      const single = extractSingleBookPage(doc, url);
+      if (single) {
+        rowNumber += 1;
+        rows.push(okRow(rowNumber, url, single, promoCode));
+        continue;
+      }
+
+      const cards = extractBookCards(doc, url);
+      if (cards.length > 0) {
+        cards.forEach((card) => {
+          rowNumber += 1;
+          rows.push(okRow(rowNumber, card.url, card, promoCode));
         });
         continue;
       }
-      rows.push({
-        rowNumber,
-        url,
-        title,
-        price,
-        caption: buildWebsiteCaption({ title, price, promoCode }),
-        imageUrl: image,
-        images: image ? [image] : [],
-        imageCount: image ? 1 : 0,
-        imageSourceType: image ? 'direct' : null,
-        imageError: null,
-      });
+
+      const generic = extractGenericProductInfo(doc, url);
+      rowNumber += 1;
+      if (!generic.title && !generic.image && !generic.price) {
+        rows.push(errorRow(rowNumber, url, "Couldn't find a title, image, or price on that page."));
+      } else {
+        rows.push(okRow(rowNumber, url, generic, promoCode));
+      }
     } catch (e) {
-      rows.push({
-        rowNumber,
-        url,
-        title: '',
-        price: '',
-        caption: '',
-        imageUrl: '',
-        images: [],
-        imageCount: 0,
-        imageSourceType: null,
-        imageError: e.message,
-      });
+      rowNumber += 1;
+      rows.push(errorRow(rowNumber, url, e.message));
     }
   }
   return rows;
