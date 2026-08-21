@@ -11,7 +11,7 @@ import {
 } from '../services/gemini';
 import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imageProviders';
 import { uploadGeneratedImage } from '../services/storage';
-import { savePost, watchSavedTexts, saveText, deleteSavedText } from '../services/content';
+import { savePost, watchSavedTexts, saveText, deleteSavedText, watchPosts } from '../services/content';
 import { applyMarkdownBold } from '../lib/text-format';
 import PostPreviewModal from '../components/post-preview-modal';
 import WebAiBridgeModal from '../components/web-ai-bridge-modal';
@@ -41,7 +41,7 @@ export default function CreatePost() {
   const [selectedPageId, setSelectedPageId] = useState(draftToEdit?.fbPageId || null);
   const fb = pages.find((p) => p.pageId === selectedPageId) || pages[0] || null;
 
-  const [mode, setMode] = useState('manual'); // 'manual' | 'ai'
+  const [mode, setMode] = useState('manual'); // 'manual' | 'ai' | 'from-previous'
   const [caption, setCaption] = useState(draftToEdit?.caption || '');
   const [imageDataUrl, setImageDataUrl] = useState(draftToEdit?.imageDataUrl || null);
   const [imageBase64, setImageBase64] = useState(
@@ -52,11 +52,22 @@ export default function CreatePost() {
   const [savedTexts, setSavedTexts] = useState([]);
   const [showLibrary, setShowLibrary] = useState(false);
   const [postResult, setPostResult] = useState(null);
+  const [allPosts, setAllPosts] = useState([]);
+  const [selectedPreviousPost, setSelectedPreviousPost] = useState(null);
+  const [previousPostQueue, setPreviousPostQueue] = useState([]);
+  const [queueInterval, setQueueInterval] = useState('2'); // hours
+  const [isPostingQueue, setIsPostingQueue] = useState(false);
+  const [queueProgress, setQueueProgress] = useState(0);
   const fileRef = useRef(null);
 
   useEffect(() => {
     if (!user) return;
     return watchSavedTexts(user.uid, setSavedTexts);
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    return watchPosts(user.uid, setAllPosts);
   }, [user]);
 
   const onFileChange = (e) => {
@@ -165,6 +176,9 @@ export default function CreatePost() {
         <button className={`tab-btn ${mode === 'ai' ? 'tab-btn-active' : ''}`} onClick={() => setMode('ai')}>
           Create with AI agent
         </button>
+        <button className={`tab-btn ${mode === 'from-previous' ? 'tab-btn-active' : ''}`} onClick={() => setMode('from-previous')}>
+          From previous posts
+        </button>
       </div>
 
       <div className="composer-grid">
@@ -181,7 +195,7 @@ export default function CreatePost() {
                 setImageBase64(null);
               }}
             />
-          ) : (
+          ) : mode === 'ai' ? (
             <AiComposer
               geminiKey={geminiKey}
               user={user}
@@ -194,6 +208,29 @@ export default function CreatePost() {
               setImageDataUrl={setImageDataUrl}
               setImageBase64={setImageBase64}
               onSaveText={(t) => user && saveText(user.uid, t)}
+            />
+          ) : (
+            <FromPreviousComposer
+              allPosts={allPosts.filter(p => (p.platform || 'facebook') === 'facebook' && p.status === 'posted')}
+              selectedPost={selectedPreviousPost}
+              setSelectedPost={setSelectedPreviousPost}
+              caption={caption}
+              setCaption={setCaption}
+              imageDataUrl={imageDataUrl}
+              setImageDataUrl={setImageDataUrl}
+              setImageBase64={setImageBase64}
+              geminiKey={geminiKey}
+              onClearImage={() => {
+                setImageDataUrl(null);
+                setImageBase64(null);
+              }}
+              onAddToQueue={(post) => {
+                setPreviousPostQueue([...previousPostQueue, { ...post, id: `${Date.now()}-${Math.random()}` }]);
+                setCaption('');
+                setImageDataUrl(null);
+                setImageBase64(null);
+                setSelectedPreviousPost(null);
+              }}
             />
           )}
 
@@ -225,20 +262,112 @@ export default function CreatePost() {
             </div>
           )}
 
-          <button
-            className="btn btn-accent btn-block"
-            style={{ marginTop: 18 }}
-            disabled={!caption.trim() && !imageDataUrl}
-            onClick={() => setShowPreview(true)}
-          >
-            Preview post
-          </button>
+          {mode !== 'from-previous' ? (
+            <button
+              className="btn btn-accent btn-block"
+              style={{ marginTop: 18 }}
+              disabled={!caption.trim() && !imageDataUrl}
+              onClick={() => setShowPreview(true)}
+            >
+              Preview post
+            </button>
+          ) : (
+            <>
+              <div style={{ marginTop: 18 }}>
+                {previousPostQueue.length > 0 && (
+                  <div>
+                    <div style={{ marginBottom: 12, fontSize: '0.9rem' }}>
+                      <strong>{previousPostQueue.length} posts in queue</strong>
+                      <div className="field-hint">Posts will be scheduled every {queueInterval} hours</div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+                      <select value={queueInterval} onChange={(e) => setQueueInterval(e.target.value)} style={{ flex: 1 }}>
+                        <option value="0.5">Every 30 minutes</option>
+                        <option value="1">Every 1 hour</option>
+                        <option value="2">Every 2 hours</option>
+                        <option value="4">Every 4 hours</option>
+                        <option value="6">Every 6 hours</option>
+                        <option value="12">Every 12 hours</option>
+                        <option value="24">Every 24 hours</option>
+                      </select>
+                    </div>
+                    <button
+                      className="btn btn-success btn-block"
+                      disabled={isPostingQueue || previousPostQueue.length === 0}
+                      onClick={async () => {
+                        if (!fb) throw new Error('Connect a Facebook Page first.');
+                        setIsPostingQueue(true);
+                        const interval = parseFloat(queueInterval) * 60 * 60 * 1000;
+                        for (let i = 0; i < previousPostQueue.length; i++) {
+                          const post = previousPostQueue[i];
+                          try {
+                            const scheduleTime = Date.now() + interval * (i + 1);
+                            await schedulePost({
+                              pageId: fb.pageId,
+                              pageAccessToken: fb.pageAccessToken,
+                              message: post.caption,
+                              imageBase64: post.imageDataUrl?.split(',')[1] || null,
+                              scheduledAt: new Date(scheduleTime),
+                            });
+                            await savePost(user.uid, {
+                              caption: post.caption,
+                              imageDataUrl: post.imageDataUrl || null,
+                              status: 'scheduled',
+                              scheduledAt: scheduleTime,
+                              fbPageId: fb.pageId,
+                            });
+                            setQueueProgress(i + 1);
+                          } catch (err) {
+                            console.error('Failed to schedule post:', err);
+                          }
+                        }
+                        setPreviousPostQueue([]);
+                        setQueueProgress(0);
+                        setIsPostingQueue(false);
+                        setPostResult('scheduled');
+                      }}
+                      style={{ marginBottom: 12 }}
+                    >
+                      {isPostingQueue ? `Posting (${queueProgress}/${previousPostQueue.length})...` : '📤 Post all'}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         <div className="composer-side">
-          <div className="card side-preview">
-            <div className="side-preview-label">Live preview</div>
-            <div className="fb-preview fb-preview-compact">
+          {mode === 'from-previous' && previousPostQueue.length > 0 ? (
+            <div className="card side-preview">
+              <div className="side-preview-label">Queue ({previousPostQueue.length} posts)</div>
+              <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+                {previousPostQueue.map((post, idx) => (
+                  <div key={post.id} style={{ padding: 8, borderBottom: '1px solid var(--border)', fontSize: '0.85rem' }}>
+                    <div style={{ marginBottom: 6, fontWeight: 'bold' }}>Post {idx + 1}</div>
+                    {post.imageDataUrl && (
+                      <img src={post.imageDataUrl} alt="" style={{ width: '100%', height: 80, objectFit: 'cover', borderRadius: 4, marginBottom: 6 }} />
+                    )}
+                    <div style={{ color: 'var(--text-secondary)', lineHeight: 1.3 }}>
+                      {post.caption?.substring(0, 60)}...
+                    </div>
+                    <button
+                      className="btn btn-danger btn-sm"
+                      onClick={() => {
+                        setPreviousPostQueue(previousPostQueue.filter(p => p.id !== post.id));
+                      }}
+                      style={{ marginTop: 6, width: '100%' }}
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="card side-preview">
+              <div className="side-preview-label">Live preview</div>
+              <div className="fb-preview fb-preview-compact">
               <div className="fb-preview-head">
                 <img
                   src={fb?.avatar || 'https://placehold.co/40x40/e3e0d6/5b5f70?text=FB'}
@@ -258,8 +387,9 @@ export default function CreatePost() {
                   <img src={imageDataUrl} alt="" className="fb-preview-image" />
                 </div>
               )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
@@ -1155,6 +1285,180 @@ function AutoPilot({ geminiKey, user, profile, updateProfile, fb }) {
             </p>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= From Previous Posts ================= */
+
+function FromPreviousComposer({
+  allPosts,
+  selectedPost,
+  setSelectedPost,
+  caption,
+  setCaption,
+  imageDataUrl,
+  setImageDataUrl,
+  setImageBase64,
+  geminiKey,
+  onClearImage,
+  onAddToQueue,
+}) {
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [showPostList, setShowPostList] = useState(true);
+  const [regenerateCaption, setRegenerateCaption] = useState(false);
+  const [regenerateImage, setRegenerateImage] = useState(false);
+
+  const handleSelectPost = (post) => {
+    setSelectedPost(post);
+    setCaption(post.caption || '');
+    setImageDataUrl(post.imageDataUrl || null);
+    setShowPostList(false);
+  };
+
+  const regenerateWithAI = async () => {
+    if (!selectedPost || !geminiKey) return;
+    setIsRegenerating(true);
+    try {
+      if (regenerateCaption && caption.trim()) {
+        const newCaption = await generateCaptionsFromTopic(geminiKey, caption, 'engaging', 1);
+        if (newCaption) setCaption(newCaption[0]);
+      }
+      if (regenerateImage && caption.trim()) {
+        const imagePrompt = await suggestImagePrompt(geminiKey, caption);
+        if (imagePrompt) {
+          const generatedImage = await generateImageSmart(geminiKey, imagePrompt, '1:1', 'Pollinations');
+          if (generatedImage) {
+            setImageDataUrl(generatedImage);
+            setImageBase64(generatedImage.split(',')[1]);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Failed to regenerate:', err);
+    } finally {
+      setIsRegenerating(false);
+    }
+  };
+
+  return (
+    <div className="card page-card">
+      {showPostList ? (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <label className="field-label-standalone">Select a previous post to regenerate</label>
+            <p className="field-hint">Choose any posted content to use as a starting point</p>
+          </div>
+          {allPosts.length === 0 ? (
+            <p className="field-hint">No previous posts found. Create and post some content first!</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {allPosts.slice(0, 20).map((post) => (
+                <div
+                  key={post.id}
+                  onClick={() => handleSelectPost(post)}
+                  style={{
+                    padding: 12,
+                    border: '1px solid var(--border)',
+                    borderRadius: 6,
+                    cursor: 'pointer',
+                    transition: 'background 0.2s',
+                  }}
+                  className="hoverable"
+                >
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                    {(post.imageDataUrl || post.imageUrl) && (
+                      <img
+                        src={post.imageDataUrl || post.imageUrl}
+                        alt=""
+                        style={{ width: 50, height: 50, borderRadius: 4, objectFit: 'cover' }}
+                      />
+                    )}
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                        {new Date(post.createdAt?.toMillis?.() || post.createdAt || 0).toLocaleDateString()}
+                      </div>
+                      <div style={{ marginTop: 4, fontSize: '0.9rem' }}>
+                        {(post.caption || '(no caption)').substring(0, 80)}...
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ marginBottom: 16 }}>
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowPostList(true)}>
+              ← Back to posts
+            </button>
+          </div>
+
+          <div className="field">
+            <label>Caption</label>
+            <textarea
+              value={caption}
+              onChange={(e) => setCaption(e.target.value)}
+              rows={6}
+              style={{ width: '100%', padding: 8, borderRadius: 4, border: '1px solid var(--border)' }}
+              placeholder="Edit the caption…"
+            />
+          </div>
+
+          <div className="field">
+            <label>Image</label>
+            {imageDataUrl ? (
+              <div className="image-preview-row">
+                <img src={imageDataUrl} alt="" className="image-preview-thumb" />
+                <button className="btn btn-ghost btn-sm" onClick={onClearImage}>Remove</button>
+              </div>
+            ) : (
+              <div className="field-hint">No image selected</div>
+            )}
+          </div>
+
+          <div style={{ background: 'var(--bg-2)', padding: 12, borderRadius: 6, marginBottom: 12 }}>
+            <label className="checkbox-row">
+              <input
+                type="checkbox"
+                checked={regenerateCaption}
+                onChange={(e) => setRegenerateCaption(e.target.checked)}
+                disabled={isRegenerating}
+              />
+              Regenerate caption with AI
+            </label>
+            <label className="checkbox-row" style={{ marginTop: 8 }}>
+              <input
+                type="checkbox"
+                checked={regenerateImage}
+                onChange={(e) => setRegenerateImage(e.target.checked)}
+                disabled={isRegenerating || !geminiKey}
+              />
+              Regenerate image with AI {!geminiKey && '(requires Gemini API key)'}
+            </label>
+            {(regenerateCaption || regenerateImage) && (
+              <button
+                className="btn btn-sm btn-info"
+                onClick={regenerateWithAI}
+                disabled={isRegenerating || !caption.trim()}
+                style={{ marginTop: 8, width: '100%' }}
+              >
+                {isRegenerating ? '✨ Regenerating...' : '✨ Regenerate'}
+              </button>
+            )}
+          </div>
+
+          <button
+            className="btn btn-success btn-block"
+            onClick={() => onAddToQueue({ caption, imageDataUrl })}
+            disabled={!caption.trim()}
+          >
+            + Add to queue
+          </button>
+        </>
       )}
     </div>
   );

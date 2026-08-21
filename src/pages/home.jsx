@@ -77,24 +77,41 @@ export default function Home() {
         <>
           {pages.length > 0 ? (
             <>
-              {pages.map((fb) => (
-                <div key={fb.pageId} className="card page-card channel-card">
-                  <img src={fb.avatar} alt="" className="channel-card-avatar" />
-                  <div className="channel-card-info">
-                    <div className="channel-card-name">
-                      {fb.name}
-                      <TallyDot status="live" />
+              {pages.map((fb) => {
+                // Calculate performance metrics for this page
+                const pagePostsPosted = posts.filter((p) => (p.platform || 'facebook') === 'facebook' && p.status === 'posted' && p.fbPageId === fb.pageId && p.insights);
+                const totalReactions = pagePostsPosted.reduce((sum, p) => sum + (p.insights?.reactions || 0), 0);
+                const totalComments = pagePostsPosted.reduce((sum, p) => sum + (p.insights?.comments || 0), 0);
+                const totalShares = pagePostsPosted.reduce((sum, p) => sum + (p.insights?.shares || 0), 0);
+                const avgEngagement = pagePostsPosted.length > 0 
+                  ? Math.round((totalReactions + totalComments + totalShares) / pagePostsPosted.length)
+                  : 0;
+
+                return (
+                  <div key={fb.pageId} className="card page-card channel-card">
+                    <img src={fb.avatar} alt="" className="channel-card-avatar" />
+                    <div className="channel-card-info">
+                      <div className="channel-card-name">
+                        {fb.name}
+                        <TallyDot status="live" />
+                      </div>
+                      <div className="field-hint mono">
+                        {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Facebook Page'}
+                      </div>
+                      {pagePostsPosted.length > 0 && (
+                        <div style={{ marginTop: 8, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                          <div>📊 Last {pagePostsPosted.length} posts: {totalReactions} ❤ · {totalComments} 💬 · {totalShares} ↪</div>
+                          <div>Avg engagement: {avgEngagement} per post</div>
+                        </div>
+                      )}
                     </div>
-                    <div className="field-hint mono">
-                      {fb.fanCount != null ? `${fb.fanCount.toLocaleString()} followers` : 'Facebook Page'}
+                    <div className="channel-card-actions">
+                      <Link to="/create" className="btn btn-primary btn-sm">Create post</Link>
+                      <Link to="/settings" className="btn btn-ghost btn-sm">Manage</Link>
                     </div>
                   </div>
-                  <div className="channel-card-actions">
-                    <Link to="/create" className="btn btn-primary btn-sm">Create post</Link>
-                    <Link to="/settings" className="btn btn-ghost btn-sm">Manage</Link>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </>
           ) : (
             <div className="card page-card empty-card">
@@ -163,6 +180,21 @@ export default function Home() {
                 <div className="field-hint mono">
                   {youtube.subscriberCount != null ? `${Number(youtube.subscriberCount).toLocaleString()} subscribers` : 'YouTube channel'}
                 </div>
+                {(() => {
+                  const youtubePostsPosted = posts.filter((p) => p.platform === 'youtube' && p.status === 'posted' && p.insights);
+                  const totalViews = youtubePostsPosted.reduce((sum, p) => sum + (p.insights?.views || 0), 0);
+                  const totalLikes = youtubePostsPosted.reduce((sum, p) => sum + (p.insights?.likes || 0), 0);
+                  const avgViews = youtubePostsPosted.length > 0 
+                    ? Math.round(totalViews / youtubePostsPosted.length)
+                    : 0;
+                  
+                  return youtubePostsPosted.length > 0 ? (
+                    <div style={{ marginTop: 8, fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                      <div>📊 Last {youtubePostsPosted.length} videos: {totalViews.toLocaleString()} 👁 · {totalLikes} 👍</div>
+                      <div>Avg views: {avgViews.toLocaleString()} per video</div>
+                    </div>
+                  ) : null;
+                })()}
               </div>
               <div className="channel-card-actions">
                 <Link to="/create-youtube" className="btn btn-primary btn-sm">Upload video</Link>

@@ -95,13 +95,21 @@ export default function Log() {
     }
   };
 
-  const byStatus = filter === 'all' ? posts : posts.filter((p) => p.status === filter);
+  // Filter out posted items older than 24 hours
+  const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+  const postsNotExpired = posts.filter((p) => {
+    if (p.status !== 'posted') return true;
+    const postTime = rowTime(p);
+    return Date.now() - postTime < TWENTY_FOUR_HOURS_MS;
+  });
+
+  const byStatus = filter === 'all' ? postsNotExpired : postsNotExpired.filter((p) => p.status === filter);
   const byPage = pageFilter === 'all' ? byStatus : byStatus.filter((p) => p.fbPageId === pageFilter);
   // Selecting a page shows every one of its posts in true chronological
   // order — most recent (or soonest-due) first — instead of the mixed,
   // recently-edited ordering Firestore returns by default.
   const visible = [...byPage].sort((a, b) => rowTime(b) - rowTime(a));
-  const scheduledCount = posts.filter((p) => p.status === 'scheduled').length;
+  const scheduledCount = postsNotExpired.filter((p) => p.status === 'scheduled').length;
 
   return (
     <div className="page">
