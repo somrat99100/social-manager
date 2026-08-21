@@ -142,42 +142,6 @@ Respond ONLY as JSON: an array of exactly 3 strings, each a complete ready-to-po
   return safeParseJsonArray(textOf(data));
 }
 
-/**
- * Rewrite an EXISTING caption as a fresh variation — same topic, same core
- * message, same rough length — rather than treating it as a loose topic
- * brief to expand into a brand-new post. This is what "Regenerate caption
- * with AI" (on the From Previous Posts screen) uses: the person is
- * reworking one specific caption, not asking for a new post idea, so the
- * result should read like a rewrite of what's there, not a longer/different
- * post that happens to share a subject.
- */
-export async function regenerateCaption(originalCaption, apiKey, opts = {}) {
-  const { tone = 'friendly', includeHashtags = true, emojiLevel = 'tasteful' } = opts;
-  const toneDesc = TONE_GUIDES[tone] || TONE_GUIDES.friendly;
-  const original = (originalCaption || '').trim();
-  const wordCount = original ? original.split(/\s+/).length : 0;
-
-  const prompt = `You're a social media manager reworking an EXISTING Facebook caption for the same page — not writing a new post about a topic. Here is the caption as it stands now:
-"""
-${original}
-"""
-
-Rewrite it as a fresh variation:
-- Keep the same subject and core message — do not introduce new claims, facts, or details that weren't in the original.
-- Change the wording, hook, and phrasing enough that it doesn't read like the same post copy-pasted, but it must still clearly be about the same thing.
-- Stay close to the original's length — the original is about ${wordCount} words, so keep the rewrite within roughly the same range (do not pad it into a longer, more elaborate post).
-- Keep the same number of short paragraph breaks/chunks as the original, not one dense block.
-- Voice: ${toneDesc}.
-- ${emojiRule(emojiLevel)}
-- ${hashtagRule(includeHashtags)}
-- ${AI_TELLS_RULE}
-
-Respond with ONLY the rewritten caption text, nothing else — no JSON, no code fences, no preamble, no explanation of what changed.`;
-
-  const data = await callGemini(TEXT_MODEL, { contents: [{ parts: [{ text: prompt }] }] }, apiKey);
-  return textOf(data).trim();
-}
-
 /** Suggest a short, concrete image prompt that pairs with a given caption or topic. */
 export async function suggestImagePrompt(context, apiKey) {
   const prompt = `Based on this Facebook post caption or topic: "${context}"
@@ -353,77 +317,6 @@ Strictly avoid: any text, letters, numbers, captions, watermarks, or logos rende
 }
 
 /**
- * Edit an EXISTING image in place (image-to-image), rather than generating
- * a brand new picture from a text prompt. Used for "add a promo text
- * overlay to the post's current photo" — the subject/background/composition
- * of the original photo is preserved; only a large, legible text overlay is
- * added on top. Takes the original image's raw base64 + mime type (no
- * data: prefix) and returns the edited image the same shape as
- * generateImage: { base64, mimeType }.
- */
-export async function addPromoTextToImage(imageBase64, imageMimeType, promoText, apiKey) {
-  const text = (promoText || '').trim();
-  if (!text) throw new Error('Enter the promo code / text to add first.');
-
-  const prompt = `Edit this exact photo — do not generate a new/different image. Add a large, bold, highly legible text overlay on top of it that reads exactly:
-"${text}"
-
-Rules for the overlay:
-- Big, bold, high-contrast lettering — easy to read at a glance, even as a small feed thumbnail.
-- Place it in a clear, uncluttered area of the photo (e.g. bottom third or top third) — never over a face or the main subject.
-- Add a solid or semi-transparent banner/box behind the text if needed so it stays legible against the photo.
-- Clean modern sans-serif style, centered.
-- Do not change the text's wording, spelling, or capitalization — reproduce it exactly as given.
-- Do not add any other text, watermark, or logo.
-- Keep everything else about the photo unchanged: same subject, background, colors, lighting, composition, aspect ratio, and crop.`;
-
-  const data = await callGemini(
-    IMAGE_MODEL,
-    {
-      contents: [
-        {
-          parts: [
-            { inlineData: { mimeType: imageMimeType, data: imageBase64 } },
-            { text: prompt },
-          ],
-        },
-      ],
-      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
-    },
-    apiKey
-  );
-
-  return extractImageFromResponse(data);
-}
-
-function extractImageFromResponse(data) {
-  const candidate = data.candidates?.[0];
-  const parts = candidate?.content?.parts || [];
-  const imgPart = parts.find((p) => p.inlineData || p.inline_data);
-
-  if (!imgPart) {
-    const finishReason = candidate?.finishReason;
-    if (finishReason === 'SAFETY' || finishReason === 'IMAGE_SAFETY' || finishReason === 'PROHIBITED_CONTENT') {
-      throw new Error(
-        "Gemini's safety filters blocked that edit. Try simpler overlay text — avoid real people's names, brand logos, or anything suggestive."
-      );
-    }
-    if (finishReason === 'RECITATION') {
-      throw new Error('Gemini blocked this as too close to existing copyrighted material — try different wording.');
-    }
-    const textPart = parts.find((p) => p.text)?.text;
-    throw new Error(
-      textPart
-        ? `Gemini didn't return an image: ${textPart.slice(0, 200)}`
-        : 'Gemini did not return an image for that request. Try again.'
-    );
-  }
-
-  const inline = imgPart.inlineData || imgPart.inline_data;
-  return { base64: inline.data, mimeType: inline.mimeType || inline.mime_type || 'image/png' };
-}
-
-/**
  * Generate an image from a prompt using Gemini's free-tier image model
  * (Nano Banana). Returns { base64, mimeType } or throws a human-readable error.
  */
@@ -443,7 +336,30 @@ export async function generateImage(prompt, apiKey, opts = {}) {
     apiKey
   );
 
-  return extractImageFromResponse(data);
+  const candidate = data.candidates?.[0];
+  const parts = candidate?.content?.parts || [];
+  const imgPart = parts.find((p) => p.inlineData || p.inline_data);
+
+  if (!imgPart) {
+    const finishReason = candidate?.finishReason;
+    if (finishReason === 'SAFETY' || finishReason === 'IMAGE_SAFETY' || finishReason === 'PROHIBITED_CONTENT') {
+      throw new Error(
+        "Gemini's safety filters blocked that prompt. Try rephrasing it — avoid real people's names, violence, or anything suggestive."
+      );
+    }
+    if (finishReason === 'RECITATION') {
+      throw new Error('Gemini blocked this as too close to existing copyrighted material — try a more original description.');
+    }
+    const textPart = parts.find((p) => p.text)?.text;
+    throw new Error(
+      textPart
+        ? `Gemini didn't return an image: ${textPart.slice(0, 200)}`
+        : 'Gemini did not return an image for that prompt. Try a simpler, more concrete description.'
+    );
+  }
+
+  const inline = imgPart.inlineData || imgPart.inline_data;
+  return { base64: inline.data, mimeType: inline.mimeType || inline.mime_type || 'image/png' };
 }
 
 function safeParseJsonArray(raw) {

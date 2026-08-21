@@ -41,17 +41,6 @@ export default function Settings() {
   const [newTokenLabel, setNewTokenLabel] = useState('');
   const [newTokenValue, setNewTokenValue] = useState('');
   const [newTokenAppCredId, setNewTokenAppCredId] = useState(null);
-  // BUG FIX — the app-credential <select> below has no blank option, so
-  // whenever `newTokenAppCredId`/`connectAppCredId` state was still `null`
-  // (i.e. before the person had actually clicked into the dropdown), the
-  // browser silently rendered the FIRST app in the list as selected while
-  // the React state stayed null. On save, that null was passed to
-  // extendToken(), which falls back to fbApps[0] ("Default") — not
-  // whichever app the dropdown was visually showing. That's why a token
-  // generated on a second Facebook app kept getting saved/extended against
-  // the first ("Default") app's credentials instead. Resolving the actual
-  // selection with the same fbApps[0] fallback keeps the visible dropdown
-  // and the value actually used in sync.
   const [savingToken, setSavingToken] = useState(false);
   const [tokenActionError, setTokenActionError] = useState('');
   const [reconnectingId, setReconnectingId] = useState(null);
@@ -167,11 +156,6 @@ export default function Settings() {
   // now remembers which App credential entry to use.
   const fbApps = profile?.fbApps || [];
   const hasAppCreds = fbApps.length > 0;
-  // The actual app credential that will be used — matches what the
-  // dropdown visually shows, instead of trusting raw (possibly still-null)
-  // selection state. See BUG FIX note above `newTokenAppCredId`.
-  const resolvedConnectAppCredId = connectAppCredId || fbApps[0]?.id || null;
-  const resolvedNewTokenAppCredId = newTokenAppCredId || fbApps[0]?.id || null;
 
   // One-time migration: fold the old single fbAppId/fbAppSecret fields into
   // the new fbApps list so nobody upgrading loses their saved credentials.
@@ -295,7 +279,7 @@ export default function Settings() {
     setLoadingPages(true);
     setFoundPages([]);
     try {
-      const { token: workingToken, warning } = await extendToken(token, resolvedConnectAppCredId);
+      const { token: workingToken, warning } = await extendToken(token, connectAppCredId);
       const result = await fetchManagedPages(workingToken);
       if (result.length === 0) setFbError('That token worked, but no Pages were found for it.');
       else if (warning) setFbError(warning);
@@ -316,7 +300,7 @@ export default function Settings() {
     setTokenActionError('');
     setSavingToken(true);
     try {
-      const { token: workingToken, warning, appCredId } = await extendToken(token, resolvedNewTokenAppCredId);
+      const { token: workingToken, warning, appCredId } = await extendToken(token, newTokenAppCredId);
       const result = await fetchManagedPages(workingToken);
       if (result.length === 0) {
         setTokenActionError('That token worked, but no Pages were found for it.');
@@ -471,7 +455,7 @@ export default function Settings() {
       await mergePagesIntoProfile(foundPages);
       const rawToken = userToken.trim();
       if (rawToken) {
-        const { token: workingToken, appCredId } = await extendToken(rawToken, resolvedConnectAppCredId);
+        const { token: workingToken, appCredId } = await extendToken(rawToken, connectAppCredId);
         const alreadySaved = savedTokens.some((t) => t.token === workingToken || t.token === rawToken);
         if (!alreadySaved) {
           const entry = {
@@ -701,15 +685,11 @@ export default function Settings() {
               {fbApps.length > 1 && (
                 <div style={{ marginTop: 8 }}>
                   <label>App credentials to extend this token with</label>
-                  <select value={resolvedConnectAppCredId || ''} onChange={(e) => setConnectAppCredId(e.target.value || null)}>
+                  <select value={connectAppCredId || ''} onChange={(e) => setConnectAppCredId(e.target.value || null)}>
                     {fbApps.map((a) => (
-                      <option key={a.id} value={a.id}>{a.label} ({a.appId})</option>
+                      <option key={a.id} value={a.id}>{a.label}</option>
                     ))}
                   </select>
-                  <p className="field-hint" style={{ marginTop: 4 }}>
-                    Make sure this matches the app you actually generated the token on — extending with the
-                    wrong app fails.
-                  </p>
                 </div>
               )}
               <p className="field-hint" style={{ marginTop: 6 }}>
@@ -875,15 +855,11 @@ export default function Settings() {
               {fbApps.length > 1 && (
                 <div className="field">
                   <label>App credentials to extend this token with</label>
-                  <select value={resolvedNewTokenAppCredId || ''} onChange={(e) => setNewTokenAppCredId(e.target.value || null)}>
+                  <select value={newTokenAppCredId || ''} onChange={(e) => setNewTokenAppCredId(e.target.value || null)}>
                     {fbApps.map((a) => (
-                      <option key={a.id} value={a.id}>{a.label} ({a.appId})</option>
+                      <option key={a.id} value={a.id}>{a.label}</option>
                     ))}
                   </select>
-                  <p className="field-hint" style={{ marginTop: 4 }}>
-                    Make sure this matches the app you actually generated the token on — extending with the
-                    wrong app fails.
-                  </p>
                 </div>
               )}
               <div style={{ display: 'flex', gap: 8 }}>

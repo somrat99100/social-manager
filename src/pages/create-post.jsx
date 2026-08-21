@@ -6,15 +6,12 @@ import {
   generateCaptionsFromTopic,
   generateAutoPostFromTopic,
   suggestImagePrompt,
-  regenerateCaption as regenerateCaptionAI,
   TONE_OPTIONS,
   IMAGE_ASPECT_OPTIONS,
 } from '../services/gemini';
 import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imageProviders';
 import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText, watchPosts } from '../services/content';
-import { fetchImageBlob } from '../services/sheets';
-import { stampPromoText } from '../lib/image-overlay';
 import { applyMarkdownBold } from '../lib/text-format';
 import PostPreviewModal from '../components/post-preview-modal';
 import WebAiBridgeModal from '../components/web-ai-bridge-modal';
@@ -1312,93 +1309,34 @@ function FromPreviousComposer({
   const [showPostList, setShowPostList] = useState(true);
   const [regenerateCaption, setRegenerateCaption] = useState(false);
   const [regenerateImage, setRegenerateImage] = useState(false);
-  // The overlay text to stamp onto the post's existing photo (e.g. a promo
-  // code banner). Defaults to a placeholder example only in the input's
-  // `placeholder` attribute — it stays blank until the person types one.
-  const [promoText, setPromoText] = useState('');
 
   const handleSelectPost = (post) => {
     setSelectedPost(post);
     setCaption(post.caption || '');
-    // A post saved from a sheet-import or auto-pilot run may only have a
-    // remote imageUrl (no imageDataUrl). Falling back to it here means the
-    // preview/edit flow below still has something to show and to edit,
-    // instead of silently treating the post as image-less.
-    setImageDataUrl(post.imageDataUrl || post.imageUrl || null);
-    setImageBase64(post.imageDataUrl ? post.imageDataUrl.split(',')[1] : null);
+    setImageDataUrl(post.imageDataUrl || null);
     setShowPostList(false);
   };
 
-  const [regenerateError, setRegenerateError] = useState('');
-
-  // Turns whatever image reference we currently have (a data: URL already
-  // in memory, or a remote URL from the original post) into the raw
-  // base64 + mime type Gemini's image-edit call needs.
-  const resolveSourceImage = async () => {
-    const current = imageDataUrl || selectedPost?.imageDataUrl || selectedPost?.imageUrl;
-    if (!current) throw new Error('This post has no image to edit — add one first.');
-    if (current.startsWith('data:')) {
-      const mimeMatch = /^data:([^;]+);base64,/.exec(current);
-      return { base64: current.split(',')[1], mimeType: mimeMatch?.[1] || 'image/png' };
-    }
-    // Remote URL (e.g. Cloudinary/Sheets-sourced image) — download it into
-    // the browser first, same helper used by sheet-import for the same
-    // reason (some hosts block server-side fetches but allow browser ones).
-    const blob = await fetchImageBlob(current);
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onerror = () => reject(new Error('Could not read that image.'));
-      reader.onloadend = () => {
-        const result = reader.result || '';
-        const mimeMatch = /^data:([^;]+);base64,/.exec(result);
-        resolve({ base64: result.split(',')[1] || '', mimeType: mimeMatch?.[1] || blob.type || 'image/png' });
-      };
-      reader.readAsDataURL(blob);
-    });
-  };
-
-  // BUG FIX — every call in here had its arguments in the wrong order (and
-  // one used a signature that doesn't exist), so "Regenerate" was silently
-  // calling Gemini with the API key in the topic slot and the caption in
-  // the API-key slot, failing the request every time and leaving the
-  // caption/image untouched with no visible error. That's fixed below.
-  //
-  // Image regeneration now stamps the promo text directly onto the post's
-  // existing photo with Canvas (see lib/image-overlay.js) instead of going
-  // through an AI image model — that sidesteps Gemini's free-tier
-  // zero-quota-until-billing-linked wall entirely, costs nothing, and
-  // guarantees the text comes out exactly as typed rather than however an
-  // image model happens to render it.
   const regenerateWithAI = async () => {
-    if (!selectedPost) return;
+    if (!selectedPost || !geminiKey) return;
     setIsRegenerating(true);
-    setRegenerateError('');
     try {
       if (regenerateCaption && caption.trim()) {
-        if (!geminiKey) {
-          setRegenerateError('Add your Gemini API key in Connect profile to regenerate captions.');
-        } else {
-          // Rewrite the existing caption as a fresh variation — same topic
-          // and roughly the same length — rather than treating it as a
-          // brief to expand into a brand-new, longer post.
-          const rewritten = await regenerateCaptionAI(caption, geminiKey, { tone: 'engaging' });
-          if (rewritten) setCaption(rewritten);
-        }
+        const newCaption = await generateCaptionsFromTopic(geminiKey, caption, 'engaging', 1);
+        if (newCaption) setCaption(newCaption[0]);
       }
-      if (regenerateImage) {
-        if (!promoText.trim()) {
-          setRegenerateError('Enter the promo text to add to the image first (e.g. "Promo code: ABCDEF").');
-        } else {
-          const { base64: sourceBase64, mimeType: sourceMime } = await resolveSourceImage();
-          const sourceDataUrl = `data:${sourceMime};base64,${sourceBase64}`;
-          const { dataUrl, base64 } = await stampPromoText(sourceDataUrl, promoText);
-          setImageBase64(base64);
-          setImageDataUrl(dataUrl);
+      if (regenerateImage && caption.trim()) {
+        const imagePrompt = await suggestImagePrompt(geminiKey, caption);
+        if (imagePrompt) {
+          const generatedImage = await generateImageSmart(geminiKey, imagePrompt, '1:1', 'Pollinations');
+          if (generatedImage) {
+            setImageDataUrl(generatedImage);
+            setImageBase64(generatedImage.split(',')[1]);
+          }
         }
       }
     } catch (err) {
       console.error('Failed to regenerate:', err);
-      setRegenerateError(err.message || 'Could not regenerate. Please try again.');
     } finally {
       setIsRegenerating(false);
     }
@@ -1497,37 +1435,20 @@ function FromPreviousComposer({
                 type="checkbox"
                 checked={regenerateImage}
                 onChange={(e) => setRegenerateImage(e.target.checked)}
-                disabled={isRegenerating}
+                disabled={isRegenerating || !geminiKey}
               />
-              Add promo text to this post's image
+              Regenerate image with AI {!geminiKey && '(requires Gemini API key)'}
             </label>
-            {regenerateImage && (
-              <div className="field" style={{ marginTop: 8, marginBottom: 0 }}>
-                <label>Promo text</label>
-                <input
-                  value={promoText}
-                  onChange={(e) => setPromoText(e.target.value)}
-                  placeholder="Promo code: ABCDEF"
-                  disabled={isRegenerating}
-                />
-                <p className="field-hint" style={{ marginTop: 4 }}>
-                  Keeps the post's existing photo as-is and stamps this text onto it as a large, legible
-                  banner — drawn directly in your browser, so it's free, instant, and always spelled
-                  exactly as typed (no AI image quota or key needed).
-                </p>
-              </div>
-            )}
             {(regenerateCaption || regenerateImage) && (
               <button
                 className="btn btn-sm btn-info"
                 onClick={regenerateWithAI}
-                disabled={isRegenerating || (regenerateImage && !promoText.trim())}
+                disabled={isRegenerating || !caption.trim()}
                 style={{ marginTop: 8, width: '100%' }}
               >
                 {isRegenerating ? '✨ Regenerating...' : '✨ Regenerate'}
               </button>
             )}
-            {regenerateError && <div className="field-error" style={{ marginTop: 8 }}>{regenerateError}</div>}
           </div>
 
           <button
