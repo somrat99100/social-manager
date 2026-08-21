@@ -6,6 +6,7 @@ const navItems = [
   { to: '/', label: 'Home', icon: '⌂' },
   { to: '/create', label: 'Create post', icon: '✎' },
   { to: '/sheet-import', label: 'Post from sheet', icon: '▦' },
+  { to: '/website-import', label: 'Post from website', icon: '⛁' },
   { to: '/create-youtube', label: 'Upload video', icon: '▶' },
   { to: '/sheet-import-youtube', label: 'Videos from sheet', icon: '▤' },
   { to: '/log', label: 'Broadcast log', icon: '▤' },

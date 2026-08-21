@@ -6,6 +6,7 @@ import CreateProfile from './pages/create-profile';
 import Home from './pages/home';
 import CreatePost from './pages/create-post';
 import SheetImport from './pages/sheet-import';
+import WebsiteImport from './pages/website-import';
 import CreatePostYoutube from './pages/create-post-youtube';
 import SheetImportYoutube from './pages/sheet-import-youtube';
 import Log from './pages/log';
@@ -53,6 +54,7 @@ function AppRoutes() {
         <Route path="/" element={<Home />} />
         <Route path="/create" element={<CreatePost />} />
         <Route path="/sheet-import" element={<SheetImport />} />
+        <Route path="/website-import" element={<WebsiteImport />} />
         <Route path="/create-youtube" element={<CreatePostYoutube />} />
         <Route path="/sheet-import-youtube" element={<SheetImportYoutube />} />
         <Route path="/log" element={<Log />} />
