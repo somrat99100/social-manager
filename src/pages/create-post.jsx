@@ -7,7 +7,6 @@ import {
   generateAutoPostFromTopic,
   suggestImagePrompt,
   regenerateCaption as regenerateCaptionAI,
-  addPromoTextToImage,
   TONE_OPTIONS,
   IMAGE_ASPECT_OPTIONS,
 } from '../services/gemini';
@@ -15,6 +14,7 @@ import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imagePro
 import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText, watchPosts } from '../services/content';
 import { fetchImageBlob } from '../services/sheets';
+import { stampPromoText } from '../lib/image-overlay';
 import { applyMarkdownBold } from '../lib/text-format';
 import PostPreviewModal from '../components/post-preview-modal';
 import WebAiBridgeModal from '../components/web-ai-bridge-modal';
@@ -1363,32 +1363,37 @@ function FromPreviousComposer({
   // the API-key slot, failing the request every time and leaving the
   // caption/image untouched with no visible error. That's fixed below.
   //
-  // Image regeneration now also does what was actually wanted here: it
-  // takes the SAME photo already on the post and edits it in place to add
-  // a large promo-text overlay, instead of generating an unrelated new
-  // image from a text description.
+  // Image regeneration now stamps the promo text directly onto the post's
+  // existing photo with Canvas (see lib/image-overlay.js) instead of going
+  // through an AI image model — that sidesteps Gemini's free-tier
+  // zero-quota-until-billing-linked wall entirely, costs nothing, and
+  // guarantees the text comes out exactly as typed rather than however an
+  // image model happens to render it.
   const regenerateWithAI = async () => {
-    if (!selectedPost || !geminiKey) return;
+    if (!selectedPost) return;
     setIsRegenerating(true);
     setRegenerateError('');
     try {
       if (regenerateCaption && caption.trim()) {
-        // Rewrite the existing caption as a fresh variation — same topic
-        // and roughly the same length — rather than treating it as a
-        // brief to expand into a brand-new, longer post.
-        const rewritten = await regenerateCaptionAI(caption, geminiKey, { tone: 'engaging' });
-        if (rewritten) setCaption(rewritten);
+        if (!geminiKey) {
+          setRegenerateError('Add your Gemini API key in Connect profile to regenerate captions.');
+        } else {
+          // Rewrite the existing caption as a fresh variation — same topic
+          // and roughly the same length — rather than treating it as a
+          // brief to expand into a brand-new, longer post.
+          const rewritten = await regenerateCaptionAI(caption, geminiKey, { tone: 'engaging' });
+          if (rewritten) setCaption(rewritten);
+        }
       }
       if (regenerateImage) {
         if (!promoText.trim()) {
           setRegenerateError('Enter the promo text to add to the image first (e.g. "Promo code: ABCDEF").');
         } else {
           const { base64: sourceBase64, mimeType: sourceMime } = await resolveSourceImage();
-          const { base64, mimeType } = await addPromoTextToImage(sourceBase64, sourceMime, promoText, geminiKey);
-          if (base64) {
-            setImageBase64(base64);
-            setImageDataUrl(`data:${mimeType};base64,${base64}`);
-          }
+          const sourceDataUrl = `data:${sourceMime};base64,${sourceBase64}`;
+          const { dataUrl, base64 } = await stampPromoText(sourceDataUrl, promoText);
+          setImageBase64(base64);
+          setImageDataUrl(dataUrl);
         }
       }
     } catch (err) {
@@ -1492,9 +1497,9 @@ function FromPreviousComposer({
                 type="checkbox"
                 checked={regenerateImage}
                 onChange={(e) => setRegenerateImage(e.target.checked)}
-                disabled={isRegenerating || !geminiKey}
+                disabled={isRegenerating}
               />
-              Add promo text to this post's image {!geminiKey && '(requires Gemini API key)'}
+              Add promo text to this post's image
             </label>
             {regenerateImage && (
               <div className="field" style={{ marginTop: 8, marginBottom: 0 }}>
@@ -1507,7 +1512,8 @@ function FromPreviousComposer({
                 />
                 <p className="field-hint" style={{ marginTop: 4 }}>
                   Keeps the post's existing photo as-is and stamps this text onto it as a large, legible
-                  banner — it doesn't generate a new, unrelated image.
+                  banner — drawn directly in your browser, so it's free, instant, and always spelled
+                  exactly as typed (no AI image quota or key needed).
                 </p>
               </div>
             )}
