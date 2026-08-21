@@ -6,12 +6,15 @@ import {
   generateCaptionsFromTopic,
   generateAutoPostFromTopic,
   suggestImagePrompt,
+  regenerateCaption as regenerateCaptionAI,
+  addPromoTextToImage,
   TONE_OPTIONS,
   IMAGE_ASPECT_OPTIONS,
 } from '../services/gemini';
 import { generateImageSmart, IMAGE_PROVIDER_OPTIONS } from '../services/imageProviders';
 import { uploadGeneratedImage } from '../services/storage';
 import { savePost, watchSavedTexts, saveText, deleteSavedText, watchPosts } from '../services/content';
+import { fetchImageBlob } from '../services/sheets';
 import { applyMarkdownBold } from '../lib/text-format';
 import PostPreviewModal from '../components/post-preview-modal';
 import WebAiBridgeModal from '../components/web-ai-bridge-modal';
@@ -1309,51 +1312,79 @@ function FromPreviousComposer({
   const [showPostList, setShowPostList] = useState(true);
   const [regenerateCaption, setRegenerateCaption] = useState(false);
   const [regenerateImage, setRegenerateImage] = useState(false);
+  // The overlay text to stamp onto the post's existing photo (e.g. a promo
+  // code banner). Defaults to a placeholder example only in the input's
+  // `placeholder` attribute — it stays blank until the person types one.
+  const [promoText, setPromoText] = useState('');
 
   const handleSelectPost = (post) => {
     setSelectedPost(post);
     setCaption(post.caption || '');
-    setImageDataUrl(post.imageDataUrl || null);
+    // A post saved from a sheet-import or auto-pilot run may only have a
+    // remote imageUrl (no imageDataUrl). Falling back to it here means the
+    // preview/edit flow below still has something to show and to edit,
+    // instead of silently treating the post as image-less.
+    setImageDataUrl(post.imageDataUrl || post.imageUrl || null);
+    setImageBase64(post.imageDataUrl ? post.imageDataUrl.split(',')[1] : null);
     setShowPostList(false);
   };
 
   const [regenerateError, setRegenerateError] = useState('');
 
+  // Turns whatever image reference we currently have (a data: URL already
+  // in memory, or a remote URL from the original post) into the raw
+  // base64 + mime type Gemini's image-edit call needs.
+  const resolveSourceImage = async () => {
+    const current = imageDataUrl || selectedPost?.imageDataUrl || selectedPost?.imageUrl;
+    if (!current) throw new Error('This post has no image to edit — add one first.');
+    if (current.startsWith('data:')) {
+      const mimeMatch = /^data:([^;]+);base64,/.exec(current);
+      return { base64: current.split(',')[1], mimeType: mimeMatch?.[1] || 'image/png' };
+    }
+    // Remote URL (e.g. Cloudinary/Sheets-sourced image) — download it into
+    // the browser first, same helper used by sheet-import for the same
+    // reason (some hosts block server-side fetches but allow browser ones).
+    const blob = await fetchImageBlob(current);
+    return await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Could not read that image.'));
+      reader.onloadend = () => {
+        const result = reader.result || '';
+        const mimeMatch = /^data:([^;]+);base64,/.exec(result);
+        resolve({ base64: result.split(',')[1] || '', mimeType: mimeMatch?.[1] || blob.type || 'image/png' });
+      };
+      reader.readAsDataURL(blob);
+    });
+  };
+
   // BUG FIX — every call in here had its arguments in the wrong order (and
   // one used a signature that doesn't exist), so "Regenerate" was silently
   // calling Gemini with the API key in the topic slot and the caption in
   // the API-key slot, failing the request every time and leaving the
-  // caption/image untouched with no visible error:
-  //  - generateCaptionsFromTopic(topic, apiKey, opts) returns
-  //    { plain, polished, topic } — not an array, and it wasn't given the
-  //    caption as the topic.
-  //  - suggestImagePrompt(context, apiKey) had context/apiKey swapped.
-  //  - generateImageSmart(prompt, { provider, geminiKey, aspectRatio })
-  //    returns { base64, mimeType, ... } — not a ready data URL — and
-  //    wasn't given an options object at all.
+  // caption/image untouched with no visible error. That's fixed below.
+  //
+  // Image regeneration now also does what was actually wanted here: it
+  // takes the SAME photo already on the post and edits it in place to add
+  // a large promo-text overlay, instead of generating an unrelated new
+  // image from a text description.
   const regenerateWithAI = async () => {
     if (!selectedPost || !geminiKey) return;
     setIsRegenerating(true);
     setRegenerateError('');
     try {
-      let latestCaption = caption;
       if (regenerateCaption && caption.trim()) {
-        // Use the current caption as the topic/brief so a genuinely new
-        // caption comes back each time, rather than reusing the old one.
-        const result = await generateCaptionsFromTopic(caption, geminiKey, { tone: 'engaging' });
-        if (result?.plain) {
-          latestCaption = result.plain;
-          setCaption(result.plain);
-        }
+        // Rewrite the existing caption as a fresh variation — same topic
+        // and roughly the same length — rather than treating it as a
+        // brief to expand into a brand-new, longer post.
+        const rewritten = await regenerateCaptionAI(caption, geminiKey, { tone: 'engaging' });
+        if (rewritten) setCaption(rewritten);
       }
-      if (regenerateImage && latestCaption.trim()) {
-        const imagePrompt = await suggestImagePrompt(latestCaption, geminiKey);
-        if (imagePrompt) {
-          const { base64, mimeType } = await generateImageSmart(imagePrompt, {
-            provider: 'free',
-            geminiKey,
-            aspectRatio: '1:1',
-          });
+      if (regenerateImage) {
+        if (!promoText.trim()) {
+          setRegenerateError('Enter the promo text to add to the image first (e.g. "Promo code: ABCDEF").');
+        } else {
+          const { base64: sourceBase64, mimeType: sourceMime } = await resolveSourceImage();
+          const { base64, mimeType } = await addPromoTextToImage(sourceBase64, sourceMime, promoText, geminiKey);
           if (base64) {
             setImageBase64(base64);
             setImageDataUrl(`data:${mimeType};base64,${base64}`);
@@ -1463,13 +1494,28 @@ function FromPreviousComposer({
                 onChange={(e) => setRegenerateImage(e.target.checked)}
                 disabled={isRegenerating || !geminiKey}
               />
-              Regenerate image with AI {!geminiKey && '(requires Gemini API key)'}
+              Add promo text to this post's image {!geminiKey && '(requires Gemini API key)'}
             </label>
+            {regenerateImage && (
+              <div className="field" style={{ marginTop: 8, marginBottom: 0 }}>
+                <label>Promo text</label>
+                <input
+                  value={promoText}
+                  onChange={(e) => setPromoText(e.target.value)}
+                  placeholder="Promo code: ABCDEF"
+                  disabled={isRegenerating}
+                />
+                <p className="field-hint" style={{ marginTop: 4 }}>
+                  Keeps the post's existing photo as-is and stamps this text onto it as a large, legible
+                  banner — it doesn't generate a new, unrelated image.
+                </p>
+              </div>
+            )}
             {(regenerateCaption || regenerateImage) && (
               <button
                 className="btn btn-sm btn-info"
                 onClick={regenerateWithAI}
-                disabled={isRegenerating || !caption.trim()}
+                disabled={isRegenerating || (regenerateImage && !promoText.trim())}
                 style={{ marginTop: 8, width: '100%' }}
               >
                 {isRegenerating ? '✨ Regenerating...' : '✨ Regenerate'}
