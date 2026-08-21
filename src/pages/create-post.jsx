@@ -1317,26 +1317,52 @@ function FromPreviousComposer({
     setShowPostList(false);
   };
 
+  const [regenerateError, setRegenerateError] = useState('');
+
+  // BUG FIX — every call in here had its arguments in the wrong order (and
+  // one used a signature that doesn't exist), so "Regenerate" was silently
+  // calling Gemini with the API key in the topic slot and the caption in
+  // the API-key slot, failing the request every time and leaving the
+  // caption/image untouched with no visible error:
+  //  - generateCaptionsFromTopic(topic, apiKey, opts) returns
+  //    { plain, polished, topic } — not an array, and it wasn't given the
+  //    caption as the topic.
+  //  - suggestImagePrompt(context, apiKey) had context/apiKey swapped.
+  //  - generateImageSmart(prompt, { provider, geminiKey, aspectRatio })
+  //    returns { base64, mimeType, ... } — not a ready data URL — and
+  //    wasn't given an options object at all.
   const regenerateWithAI = async () => {
     if (!selectedPost || !geminiKey) return;
     setIsRegenerating(true);
+    setRegenerateError('');
     try {
+      let latestCaption = caption;
       if (regenerateCaption && caption.trim()) {
-        const newCaption = await generateCaptionsFromTopic(geminiKey, caption, 'engaging', 1);
-        if (newCaption) setCaption(newCaption[0]);
+        // Use the current caption as the topic/brief so a genuinely new
+        // caption comes back each time, rather than reusing the old one.
+        const result = await generateCaptionsFromTopic(caption, geminiKey, { tone: 'engaging' });
+        if (result?.plain) {
+          latestCaption = result.plain;
+          setCaption(result.plain);
+        }
       }
-      if (regenerateImage && caption.trim()) {
-        const imagePrompt = await suggestImagePrompt(geminiKey, caption);
+      if (regenerateImage && latestCaption.trim()) {
+        const imagePrompt = await suggestImagePrompt(latestCaption, geminiKey);
         if (imagePrompt) {
-          const generatedImage = await generateImageSmart(geminiKey, imagePrompt, '1:1', 'Pollinations');
-          if (generatedImage) {
-            setImageDataUrl(generatedImage);
-            setImageBase64(generatedImage.split(',')[1]);
+          const { base64, mimeType } = await generateImageSmart(imagePrompt, {
+            provider: 'free',
+            geminiKey,
+            aspectRatio: '1:1',
+          });
+          if (base64) {
+            setImageBase64(base64);
+            setImageDataUrl(`data:${mimeType};base64,${base64}`);
           }
         }
       }
     } catch (err) {
       console.error('Failed to regenerate:', err);
+      setRegenerateError(err.message || 'Could not regenerate. Please try again.');
     } finally {
       setIsRegenerating(false);
     }
@@ -1449,6 +1475,7 @@ function FromPreviousComposer({
                 {isRegenerating ? '✨ Regenerating...' : '✨ Regenerate'}
               </button>
             )}
+            {regenerateError && <div className="field-error" style={{ marginTop: 8 }}>{regenerateError}</div>}
           </div>
 
           <button
